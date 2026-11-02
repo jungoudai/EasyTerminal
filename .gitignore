@@ -1,0 +1,13 @@
+# Build output
+bin/
+obj/
+AppPackages/
+BundleArtifacts/
+
+# Installers are built from source; each is tens of megabytes
+WinUI/EasyTerminal/Installer/Output/
+
+# IDE state
+.vs/
+*.user
+*.suo

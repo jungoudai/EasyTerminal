@@ -1,0 +1,10 @@
+{
+  "profiles": {
+    "EasyTerminal (Package)": {
+      "commandName": "MsixPackage"
+    },
+    "EasyTerminal (Unpackaged)": {
+      "commandName": "Project"
+    }
+  }
+}

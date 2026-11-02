@@ -1,0 +1,213 @@
+using System.Text.Json.Serialization;
+
+namespace EasyTerminal.Core.Models;
+
+public enum ConnectionProtocol { Ssh, Sftp, Mosh, Tmux, Herdr, Rdp, Telnet, Serial, Docker, Proxmox, Monitor, Tools, Network }
+public enum AuthMethod { Agent, KeyFile, Password }
+public enum ProxyKind { None, Socks5, Socks4, Http }
+public enum LocalKind { Shell, Wsl, Docker, Multipass }
+public enum PortForwardKind { Local, Remote, Dynamic }
+
+public sealed class NetworkProfile
+{
+    public ProxyKind ProxyKind { get; set; }
+    public string ProxyHost { get; set; } = "";
+    public int ProxyPort { get; set; } = 1080;
+    public string ProxyUser { get; set; } = "";
+    /// <summary>Stable id of the proxy password in the vault; null when none is saved.</summary>
+    public string? ProxySecretId { get; set; }
+    /// <summary>Hops in order from this machine towards the target.</summary>
+    public List<Guid> JumpDeviceIds { get; set; } = new();
+
+    [JsonIgnore]
+    public bool IsDirect => ProxyKind == ProxyKind.None && JumpDeviceIds.Count == 0;
+}
+
+public sealed class Connection
+{
+    public Guid Id { get; set; } = Guid.NewGuid();
+    public string Name { get; set; } = "";
+    public ConnectionProtocol Protocol { get; set; }
+    /// <summary>tmux or herdr session name; empty means the default session.</summary>
+    public string SessionName { get; set; } = "";
+    /// <summary>Command run on the remote instead of a login shell (SSH), or the start directory (SFTP).</summary>
+    public string Command { get; set; } = "";
+    /// <summary>Overrides for this connection; empty values fall back to the device.</summary>
+    public string User { get; set; } = "";
+    public int? Port { get; set; }
+    public bool OverrideNetwork { get; set; }
+    public NetworkProfile Network { get; set; } = new();
+    public DateTimeOffset? LastUsed { get; set; }
+    /// <summary>Snippet run when an SSH session opens, before the login shell takes over.</summary>
+    public Guid? StartupSnippetId { get; set; }
+    /// <summary>RDP sign-in domain; empty means none.</summary>
+    public string Domain { get; set; } = "";
+    /// <summary>Stable id of the RDP password in the vault; null makes the server or client ask.</summary>
+    public string? PasswordSecretId { get; set; }
+    public bool RedirectClipboard { get; set; } = true;
+    public bool RedirectDrives { get; set; }
+    /// <summary>Serial line speed; the port itself is the device's host, such as COM3.</summary>
+    public int BaudRate { get; set; } = 115200;
+}
+
+public sealed class Device
+{
+    public Guid Id { get; set; } = Guid.NewGuid();
+    public string Name { get; set; } = "";
+    public string Host { get; set; } = "";
+    /// <summary>Other addresses of the same machine, tried in order after <see cref="Host"/>; each may include a port.</summary>
+    public List<string> AlternateAddresses { get; set; } = new();
+    public int Port { get; set; } = 22;
+    public string User { get; set; } = "";
+    public AuthMethod Auth { get; set; } = AuthMethod.Agent;
+    public string KeyPath { get; set; } = "";
+    public string? PasswordSecretId { get; set; }
+    public NetworkProfile Network { get; set; } = new();
+    public List<Connection> Connections { get; set; } = new();
+    public bool IsExpanded { get; set; } = true;
+    /// <summary>Folder shown on the devices page; empty means ungrouped.</summary>
+    public string Group { get; set; } = "";
+    public List<string> Tags { get; set; } = new();
+    public bool ForwardAgent { get; set; }
+    /// <summary>What the last scan learned, kept so the card is informative before the next scan.</summary>
+    public DeviceFacts? Facts { get; set; }
+    /// <summary>Sessions this device was offered automatically, so one the user deleted is not offered again.</summary>
+    public List<ConnectionProtocol> OfferedConnections { get; set; } = new();
+
+    /// <summary>Adds a session the first time it applies to this device, unless one like it already exists.</summary>
+    public void Offer(ConnectionProtocol protocol, string name)
+    {
+        if (OfferedConnections.Contains(protocol)) return;
+        OfferedConnections.Add(protocol);
+        bool exists = Connections.Any(c => c.Protocol == protocol && (protocol != ConnectionProtocol.Tmux || c.SessionName.Length == 0));
+        if (!exists) Connections.Add(new Connection { Name = name, Protocol = protocol });
+    }
+
+    /// <summary>The status view (performance, network, tools) only needs a shell, so every SSH machine gets it.</summary>
+    public void OfferBuiltInSessions() => Offer(ConnectionProtocol.Monitor, "状态");
+
+    /// <summary>
+    /// 1.0.5 offered network and tools as sessions of their own and called the status view "性能".
+    /// Those are one view now, so the extra buttons go and the old default name follows.
+    /// </summary>
+    public void MergeStatusSessions()
+    {
+        Connections.RemoveAll(c => c.Protocol is ConnectionProtocol.Network or ConnectionProtocol.Tools);
+        foreach (var connection in Connections.Where(c => c.Protocol == ConnectionProtocol.Monitor && c.Name == "性能"))
+            connection.Name = "状态";
+    }
+
+    /// <summary>Lists of tmux sessions, containers or guests only make sense once a scan found that software.</summary>
+    public bool Shows(Connection connection) => connection.Protocol switch
+    {
+        ConnectionProtocol.Tmux when connection.SessionName.Length == 0 => Facts?.HasTmux == true,
+        ConnectionProtocol.Docker => Facts?.HasDocker == true,
+        ConnectionProtocol.Proxmox => Facts?.HasProxmox == true,
+        ConnectionProtocol.Tools or ConnectionProtocol.Network => false,
+        _ => true,
+    };
+}
+
+/// <summary>Operating system, load and location of a machine at the time of its last scan.</summary>
+public sealed class DeviceFacts
+{
+    public string Hostname { get; set; } = "";
+    public string Os { get; set; } = "";
+    public string Kernel { get; set; } = "";
+    public string Architecture { get; set; } = "";
+    public string Virtualization { get; set; } = "";
+    public string ProxmoxVersion { get; set; } = "";
+    public int CpuCount { get; set; }
+    public long MemoryTotalKb { get; set; }
+    public long MemoryAvailableKb { get; set; }
+    public double Load1 { get; set; }
+    public double Load5 { get; set; }
+    public double Load15 { get; set; }
+    public long UptimeSeconds { get; set; }
+    public string PublicIp { get; set; } = "";
+    public string CountryCode { get; set; } = "";
+    public string Region { get; set; } = "";
+    public string City { get; set; } = "";
+    public string Network { get; set; } = "";
+    public DateTimeOffset ScannedAt { get; set; }
+    public bool HasTmux { get; set; }
+    public bool HasDocker { get; set; }
+    public bool HasProxmox { get; set; }
+    /// <summary>Known monitoring and diagnostic tools found on the machine.</summary>
+    public List<string> Tools { get; set; } = new();
+    public string PackageManager { get; set; } = "";
+    public bool IsRoot { get; set; }
+}
+
+/// <summary>A saved piece of text sent to terminals; {{name}} placeholders are asked for when it runs.</summary>
+public sealed class Snippet
+{
+    public Guid Id { get; set; } = Guid.NewGuid();
+    public string Name { get; set; } = "";
+    public string Body { get; set; } = "";
+    public string Group { get; set; } = "";
+    public string Description { get; set; } = "";
+    /// <summary>Press Enter after sending; off leaves the text at the prompt to review.</summary>
+    public bool RunImmediately { get; set; } = true;
+    public DateTimeOffset? LastUsed { get; set; }
+}
+
+public sealed class PortForward
+{
+    public Guid Id { get; set; } = Guid.NewGuid();
+    public string Name { get; set; } = "";
+    public PortForwardKind Kind { get; set; }
+    public Guid DeviceId { get; set; }
+    /// <summary>Loopback unless the user chooses to expose the port.</summary>
+    public string BindAddress { get; set; } = "127.0.0.1";
+    public int BindPort { get; set; }
+    public string TargetHost { get; set; } = "127.0.0.1";
+    public int TargetPort { get; set; }
+    public bool AutoStart { get; set; }
+}
+
+/// <summary>A runnable local environment found by a scan or pinned as a shell.</summary>
+public sealed record LocalTarget(LocalKind Kind, string Id, string Name, string Detail, bool IsRunning, IReadOnlyList<string> Command)
+{
+    public string StableKey => $"{Kind}:{Id}";
+}
+
+public sealed class AppSettings
+{
+    public string FontFamily { get; set; } = "Cascadia Mono";
+    public double FontSize { get; set; } = 13;
+    public double LineHeight { get; set; } = 1.15;
+    public string ColorScheme { get; set; } = "One Half Dark";
+    public int Scrollback { get; set; } = 10000;
+    public bool CursorBlink { get; set; } = true;
+    public string Theme { get; set; } = "Default";
+    public string DefaultShellKey { get; set; } = "";
+    public bool RestoreSessions { get; set; }
+    public bool ConfirmCloseRunning { get; set; } = true;
+    public bool BoldIsBright { get; set; } = true;
+    public string AssistantUrl { get; set; } = "https://chat.deepseek.com/";
+    public double AssistantWidth { get; set; } = 440;
+    /// <summary>Lets a scan ask ipinfo.io or ipapi.co where the machine is.</summary>
+    public bool RegionLookup { get; set; } = true;
+    public bool LogSessions { get; set; }
+}
+
+/// <summary>Enough to reopen a tab on the next launch.</summary>
+public sealed class SessionRef
+{
+    public Guid? ConnectionId { get; set; }
+    public string? LocalKey { get; set; }
+}
+
+public sealed class AppData
+{
+    public List<Device> Devices { get; set; } = new();
+    public AppSettings Settings { get; set; } = new();
+    public List<SessionRef> OpenSessions { get; set; } = new();
+    public Dictionary<string, DateTimeOffset> LocalLastUsed { get; set; } = new();
+    public List<Snippet> Snippets { get; set; } = new();
+    public List<PortForward> PortForwards { get; set; } = new();
+    public string GitHubLogin { get; set; } = "";
+    /// <summary>Stable id of the GitHub token in the vault; null when not connected.</summary>
+    public string? GitHubTokenSecretId { get; set; }
+}
