@@ -1,11 +1,15 @@
+using EasyTerminal.Assistant;
 using EasyTerminal.Core.Models;
 using EasyTerminal.Core.Ssh;
 using EasyTerminal.Pages;
 using EasyTerminal.Services;
 using EasyTerminal.Sessions;
+using Microsoft.UI.Dispatching;
 using Microsoft.UI.Windowing;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
+using Microsoft.UI.Xaml.Input;
+using Microsoft.UI.Xaml.Media;
 using WinRT.Interop;
 
 namespace EasyTerminal;
@@ -27,8 +31,16 @@ public sealed partial class MainWindow : Window
     private string _currentPage = "home";
     private SessionTab? _activeTab;
     private SessionTab? _splitLeft, _splitRight;
+    private SessionTab? _lastTerminal;
     private WebPane? _assistant;
     private string _assistantUrl = "";
+    private AgentPane? _agent;
+    private readonly Grid _aiBody = new();
+    private SidePanel? _aiPanel, _snippetsPanel;
+    private SnippetsPanel? _snippets;
+    private readonly ThemeShadow _floatShadow = new();
+    private bool _sideHidesRemoteDesktop;
+    private readonly DispatcherQueueTimer _pageRefreshTimer;
     private bool _closingConfirmed;
 
     public static nint WindowHandle { get; private set; }
@@ -64,16 +76,29 @@ public sealed partial class MainWindow : Window
         _app.SettingsChanged += ApplyTheme;
         _app.SettingsChanged += ApplyAssistantUrl;
 
-        var assistantHandle = new Controls.ResizeHandle();
-        assistantHandle.Dragged += delta =>
+        Controls.TerminalView.AppShortcut = OnAppShortcut;
+        foreach (var key in new[] { Windows.System.VirtualKey.I, Windows.System.VirtualKey.S })
         {
-            // The pane sits on the right edge, so dragging left makes it wider.
-            var settings = _app.Store.Data.Settings;
-            settings.AssistantWidth = Math.Clamp(settings.AssistantWidth - delta, 300, 1000);
-            AssistantHost.Width = settings.AssistantWidth;
+            var accelerator = new KeyboardAccelerator { Modifiers = Windows.System.VirtualKeyModifiers.Control | Windows.System.VirtualKeyModifiers.Shift, Key = key };
+            accelerator.Invoked += OnSidePanelAccelerator;
+            RootGrid.KeyboardAccelerators.Add(accelerator);
+        }
+        // A floating panel casts its shadow on the sessions and pages under it.
+        _floatShadow.Receivers.Add(PageHost);
+        _floatShadow.Receivers.Add(SessionHost);
+
+        // Titles change at every prompt; refreshing the page behind for each one is wasted work.
+        _pageRefreshTimer = DispatcherQueue.CreateTimer();
+        _pageRefreshTimer.Interval = TimeSpan.FromMilliseconds(300);
+        _pageRefreshTimer.IsRepeating = false;
+        _pageRefreshTimer.Tick += (_, _) =>
+        {
+            if (PageHost.Visibility == Visibility.Visible) (PageHost.Children.FirstOrDefault() as IRefreshablePage)?.Refresh();
         };
-        assistantHandle.DragEnded += () => _app.Store.Save();
-        AssistantHandleHost.Children.Add(assistantHandle);
+
+        // Minimized, nothing is seen, so terminals stop drawing until the window comes back.
+        VisibilityChanged += (_, args) => Controls.TerminalView.WindowVisible = args.Visible;
+
         _app.PromptHandler = OnSshPrompt;
         AppWindow.Closing += OnWindowClosing;
 
@@ -387,108 +412,207 @@ public sealed partial class MainWindow : Window
         UpdateSelection();
     }
 
-    // ---- AI assistant ------------------------------------------------------------------------
+    // ---- Side panels: AI and snippets ----------------------------------------------------------
 
-    private void ToggleAssistant() => SetAssistantOpen(AssistantHost.Visibility != Visibility.Visible);
+    private void ToggleAssistant() => TogglePanel(AiPanel());
 
-    // The toggle flips itself on click; the pane's state is what decides how it ends up.
+    private void ToggleSnippets() => TogglePanel(SnippetsSidePanel());
+
+    // The toggles flip themselves on click; the panel's state is what decides how they end up.
     private void OnAssistantButtonClick(object sender, RoutedEventArgs e) => ToggleAssistant();
 
-    // ---- Snippets in the title bar -----------------------------------------------------------
+    private void OnSnippetsButtonClick(object sender, RoutedEventArgs e) => ToggleSnippets();
 
-    private void OnSnippetsButtonClick(object sender, RoutedEventArgs e) => ShowSnippetFlyout();
-
-    /// <summary>A quick list to send a snippet to the terminal in front, without leaving it.</summary>
-    internal Flyout ShowSnippetFlyout()
+    private void OnAppShortcut(Windows.System.VirtualKey key)
     {
-        var target = _activeTab is { Terminal.State: Core.Terminal.SessionState.Running } tab ? tab : null;
-        var search = new TextBox { PlaceholderText = "搜索片段" };
-        var list = new ListView { SelectionMode = ListViewSelectionMode.None, IsItemClickEnabled = true, MaxHeight = 360 };
-        var hint = Ui.Secondary(target != null ? "点击发送到 " + target.Title : "没有正在运行的终端，点击会先提示打开一个", true);
-        var flyout = new Flyout();
+        if (key == Windows.System.VirtualKey.I) ToggleAssistant();
+        else if (key == Windows.System.VirtualKey.S) ToggleSnippets();
+    }
 
-        void Fill()
+    private void OnSidePanelAccelerator(KeyboardAccelerator sender, KeyboardAcceleratorInvokedEventArgs args)
+    {
+        args.Handled = true;
+        OnAppShortcut(sender.Key);
+    }
+
+    /// <summary>The terminal commands and snippets go to: the one in front, or the last one used.</summary>
+    private SessionTab? FrontTerminal()
+    {
+        if (_activeTab is { Terminal.State: Core.Terminal.SessionState.Running } active) return active;
+        return _lastTerminal is { Terminal.State: Core.Terminal.SessionState.Running } last && _sessions.Tabs.Contains(last) ? last : null;
+    }
+
+    private SidePanel? OpenSidePanel =>
+        SideHost.Visibility == Visibility.Visible ? SideHost.Children.OfType<SidePanel>().FirstOrDefault(p => p.Visibility == Visibility.Visible) : null;
+
+    private SidePanel AiPanel()
+    {
+        if (_aiPanel != null) return _aiPanel;
+        var settings = _app.Store.Data.Settings;
+        _agent = new AgentPane(_sessions, FrontTerminal, () => Navigate("settings"));
+        _aiBody.Children.Add(_agent);
+
+        // Native agent or the web page from settings; the page stays loaded while the agent is in front.
+        var agentItem = new SelectorBarItem { Text = "Agent" };
+        var webItem = new SelectorBarItem { Text = "网页" };
+        var mode = new SelectorBar { Margin = new Thickness(8, -4, 0, -4) };
+        mode.Items.Add(agentItem);
+        mode.Items.Add(webItem);
+        mode.SelectedItem = settings.AssistantUsesAgent ? agentItem : webItem;
+        mode.SelectionChanged += (_, _) =>
         {
-            list.Items.Clear();
-            string query = search.Text.Trim();
-            foreach (var snippet in _app.Store.Data.Snippets
-                .Where(s => query.Length == 0 || s.Name.Contains(query, StringComparison.OrdinalIgnoreCase) || s.Body.Contains(query, StringComparison.OrdinalIgnoreCase))
-                .OrderByDescending(s => s.LastUsed).ThenBy(s => s.Name))
-            {
-                var item = new StackPanel { Padding = new Thickness(0, 4, 0, 4), Tag = snippet };
-                item.Children.Add(Ui.Body(snippet.Name));
-                item.Children.Add(new TextBlock
-                {
-                    Text = snippet.Body.ReplaceLineEndings(" ⏎ "),
-                    FontFamily = new Microsoft.UI.Xaml.Media.FontFamily("Cascadia Mono"),
-                    FontSize = 12,
-                    TextTrimming = TextTrimming.CharacterEllipsis,
-                    Foreground = Ui.Brush("TextFillColorSecondaryBrush"),
-                });
-                list.Items.Add(item);
-            }
-            if (list.Items.Count == 0) list.Items.Add(Ui.Secondary(_app.Store.Data.Snippets.Count == 0 ? "还没有片段。" : "没有匹配的片段。"));
-        }
-        search.TextChanged += (_, _) => Fill();
-        list.ItemClick += (_, args) =>
-        {
-            if (args.ClickedItem is not StackPanel { Tag: Snippet snippet }) return;
-            flyout.Hide();
-            if (target == null)
-            {
-                ShowNotice("没有正在运行的终端", "先打开一个终端会话，再运行片段。", InfoBarSeverity.Informational);
-                return;
-            }
-            ActivateTab(target);
-            _ = SnippetRunner.SendAsync(snippet, new[] { target });
+            settings.AssistantUsesAgent = mode.SelectedItem == agentItem;
+            _app.Store.Save();
+            ApplyAiMode();
         };
-        Fill();
 
-        var footer = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
-        footer.Children.Add(Ui.Button("新建片段", Ui.GlyphAdd, () =>
-        {
-            flyout.Hide();
-            Navigate("snippets");
-            _ = ((SnippetsPage)_pages["snippets"]).AddAsync();
-        }));
-        footer.Children.Add(Ui.Button("管理片段", Ui.GlyphSnippet, () =>
-        {
-            flyout.Hide();
-            Navigate("snippets");
-        }));
+        _aiPanel = CreateSidePanel("ai", "AI 助手", _aiBody, settings.AssistantPinned);
+        _aiPanel.HeaderExtra = mode;
+        ApplyAiMode();
+        return _aiPanel;
+    }
 
-        var panel = new StackPanel { Spacing = 8, Width = 380 };
-        panel.Children.Add(search);
-        panel.Children.Add(hint);
-        panel.Children.Add(list);
-        panel.Children.Add(footer);
-        flyout.Content = panel;
-        // A remote desktop window would cover the flyout.
-        flyout.Opened += (_, _) => RdpPane.Suppress(true);
-        flyout.Closed += (_, _) => RdpPane.Suppress(false);
-        flyout.ShowAt(SnippetsButton);
-        _app.Dispatcher.TryEnqueue(() => search.Focus(FocusState.Programmatic));
-        return flyout;
+    private void ApplyAiMode()
+    {
+        bool agent = _app.Store.Data.Settings.AssistantUsesAgent;
+        if (!agent && _assistant == null)
+        {
+            _assistantUrl = _app.Store.Data.Settings.AssistantUrl;
+            _assistant = new WebPane(_assistantUrl);
+            _aiBody.Children.Add(_assistant);
+        }
+        _agent!.Visibility = agent ? Visibility.Visible : Visibility.Collapsed;
+        if (_assistant != null) _assistant.Visibility = agent ? Visibility.Collapsed : Visibility.Visible;
+        if (agent && OpenSidePanel == _aiPanel) _agent.FocusInput();
+    }
+
+    private SidePanel SnippetsSidePanel()
+    {
+        if (_snippetsPanel != null) return _snippetsPanel;
+        _snippets = new SnippetsPanel(FrontTerminal, ActivateTab,
+            () =>
+            {
+                Navigate("snippets");
+                _ = ((SnippetsPage)_pages["snippets"]).AddAsync();
+            },
+            () => Navigate("snippets"));
+        _snippetsPanel = CreateSidePanel("snippets", "代码片段", _snippets, _app.Store.Data.Settings.SnippetsPinned);
+        return _snippetsPanel;
+    }
+
+    private SidePanel CreateSidePanel(string key, string title, FrameworkElement body, bool pinned)
+    {
+        var panel = new SidePanel(key, title, body, pinned) { Visibility = Visibility.Collapsed };
+        panel.CloseRequested += HideSidePanel;
+        panel.PinChanged += () => SetPinned(panel, panel.IsPinned);
+        panel.WidthDragged += delta =>
+        {
+            // The panel sits on the right edge, so dragging left makes it wider.
+            double max = Math.Max(320, RootGrid.ActualWidth - 360);
+            SetPanelWidth(panel, Math.Clamp(PanelWidth(panel) - delta, 280, Math.Min(1000, max)));
+            SideHost.Width = PanelWidth(panel);
+        };
+        panel.WidthDragEnded += () => _app.Store.Save();
+        // Kept in the tree once created, so a web page or a conversation survives being closed.
+        SideHost.Children.Add(panel);
+        return panel;
+    }
+
+    private double PanelWidth(SidePanel panel) =>
+        panel == _aiPanel ? _app.Store.Data.Settings.AssistantWidth : _app.Store.Data.Settings.SnippetsWidth;
+
+    private void SetPanelWidth(SidePanel panel, double width)
+    {
+        if (panel == _aiPanel) _app.Store.Data.Settings.AssistantWidth = width;
+        else _app.Store.Data.Settings.SnippetsWidth = width;
+    }
+
+    private void SetPinned(SidePanel panel, bool pinned)
+    {
+        panel.SetPinned(pinned, raise: false);
+        if (panel == _aiPanel) _app.Store.Data.Settings.AssistantPinned = pinned;
+        else _app.Store.Data.Settings.SnippetsPinned = pinned;
+        _app.Store.Save();
+        LayoutSideHost();
+    }
+
+    private void TogglePanel(SidePanel panel)
+    {
+        if (OpenSidePanel == panel) HideSidePanel();
+        else ShowSidePanel(panel);
+    }
+
+    private void ShowSidePanel(SidePanel panel)
+    {
+        foreach (var other in SideHost.Children.OfType<SidePanel>()) other.Visibility = other == panel ? Visibility.Visible : Visibility.Collapsed;
+        SideHost.Visibility = Visibility.Visible;
+        LayoutSideHost();
+        if (panel == _snippetsPanel)
+        {
+            _snippets!.Refresh();
+            _snippets.FocusSearch();
+        }
+        else if (panel == _aiPanel && _app.Store.Data.Settings.AssistantUsesAgent)
+        {
+            _agent!.FocusInput();
+        }
+    }
+
+    private void HideSidePanel()
+    {
+        SideHost.Visibility = Visibility.Collapsed;
+        LayoutSideHost();
+        _activeTab?.View?.FocusTerminal();
+    }
+
+    /// <summary>
+    /// Pinned panels sit in their own column and the sessions shrink to make room.
+    /// Floating panels span the sessions' column too, aligned right on top of them, so nothing beneath resizes.
+    /// </summary>
+    private void LayoutSideHost()
+    {
+        var panel = OpenSidePanel;
+        bool floating = panel is { IsPinned: false };
+        Grid.SetColumn(SideHost, floating ? 0 : 1);
+        Grid.SetColumnSpan(SideHost, floating ? 2 : 1);
+        Grid.SetRow(SideHost, floating ? 1 : 0);
+        Grid.SetRowSpan(SideHost, floating ? 1 : 2);
+        SideHost.HorizontalAlignment = floating ? HorizontalAlignment.Right : HorizontalAlignment.Stretch;
+        SideHost.Margin = floating ? new Thickness(0, 6, 6, 6) : new Thickness(0);
+        SideHost.CornerRadius = floating ? new CornerRadius(8) : new CornerRadius(0);
+        SideHost.BorderThickness = floating ? new Thickness(1) : new Thickness(1, 0, 0, 0);
+        SideHost.BorderBrush = Ui.Brush(floating ? "SurfaceStrokeColorFlyoutBrush" : "CardStrokeColorDefaultBrush");
+        SideHost.Background = floating ? Ui.Brush("AcrylicInAppFillColorDefaultBrush") : null;
+        SideHost.Translation = floating ? new System.Numerics.Vector3(0, 0, 32) : System.Numerics.Vector3.Zero;
+        SideHost.Shadow = floating ? _floatShadow : null;
+        if (panel != null) SideHost.Width = PanelWidth(panel);
+
+        // A remote desktop is a window above all XAML and would hide a floating panel.
+        if (floating != _sideHidesRemoteDesktop)
+        {
+            _sideHidesRemoteDesktop = floating;
+            RdpPane.Suppress(floating);
+        }
+        AssistantButton.IsChecked = panel != null && panel == _aiPanel;
+        SnippetsButton.IsChecked = panel != null && panel == _snippetsPanel;
     }
 
 #if DEBUG
-    internal void ShowAssistantForTest() => ToggleAssistant();
+    internal SidePanel ShowSnippetsForTest()
+    {
+        ToggleSnippets();
+        return _snippetsPanel!;
+    }
+
+    internal void ShowAssistantForTest()
+    {
+        _app.Store.Data.Settings.AssistantUsesAgent = false;
+        if (_aiPanel != null) ApplyAiMode();
+        ToggleAssistant();
+    }
+
     internal WebPane? AssistantForTest => _assistant;
 #endif
-
-    private void SetAssistantOpen(bool open)
-    {
-        if (open && _assistant == null)
-        {
-            _assistantUrl = _app.Store.Data.Settings.AssistantUrl;
-            _assistant = new WebPane(_assistantUrl, () => SetAssistantOpen(false));
-            AssistantHost.Children.Add(_assistant);
-        }
-        AssistantHost.Width = _app.Store.Data.Settings.AssistantWidth;
-        // Closing only hides the pane, so a conversation in progress is still there next time.
-        AssistantHost.Visibility = AssistantHandleHost.Visibility = open ? Visibility.Visible : Visibility.Collapsed;
-        AssistantButton.IsChecked = open;
-    }
 
     private void ApplyAssistantUrl()
     {
@@ -500,10 +624,17 @@ public sealed partial class MainWindow : Window
 
     private void AskAssistant(string text)
     {
+        var panel = AiPanel();
+        if (_app.Store.Data.Settings.AssistantUsesAgent)
+        {
+            ShowSidePanel(panel);
+            _agent!.Prefill($"解释这段终端输出：\n```\n{text.TrimEnd()}\n```\n");
+            return;
+        }
         var package = new Windows.ApplicationModel.DataTransfer.DataPackage();
         package.SetText(text);
         Windows.ApplicationModel.DataTransfer.Clipboard.SetContent(package);
-        SetAssistantOpen(true);
+        ShowSidePanel(panel);
         ShowNotice("已复制选中内容", "在 AI 助手的输入框里粘贴（Ctrl+V）即可提问。", InfoBarSeverity.Informational);
     }
 
@@ -588,12 +719,15 @@ public sealed partial class MainWindow : Window
     private void OnSessionChanged(SessionTab tab)
     {
         ApplyTabState(tab);
-        (PageHost.Children.FirstOrDefault() as IRefreshablePage)?.Refresh();
+        _pageRefreshTimer.Stop();
+        _pageRefreshTimer.Start();
     }
 
     public void ActivateTab(SessionTab tab)
     {
         _activeTab = tab;
+        if (tab.Terminal != null) _lastTerminal = tab;
+        if (OpenSidePanel == _snippetsPanel) _snippets?.Refresh();
         // Picking a third session replaces the left pane; the right one stays until split view is closed.
         if (_splitRight != null && tab != _splitRight) _splitLeft = tab;
         PageHost.Visibility = Visibility.Collapsed;

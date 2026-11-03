@@ -82,6 +82,23 @@ public sealed partial class TerminalView : Grid, IDisposable
     public event Action<byte[]>? InputSent;
     /// <summary>Lets the session add its own entries to the right-click menu.</summary>
     public Action<MenuFlyout>? ExtendContextMenu { get; set; }
+    /// <summary>Window shortcuts (Ctrl+Shift+I for the AI panel, Ctrl+Shift+S for snippets) that a focused terminal would otherwise swallow.</summary>
+    public static Action<VirtualKey>? AppShortcut { get; set; }
+
+    private static volatile bool s_windowVisible = true;
+    private static event Action? WindowShown;
+
+    /// <summary>False while the window is minimized; terminals skip drawing until it is shown again.</summary>
+    public static bool WindowVisible
+    {
+        get => s_windowVisible;
+        set
+        {
+            if (s_windowVisible == value) return;
+            s_windowVisible = value;
+            if (value) WindowShown?.Invoke();
+        }
+    }
 
     public TerminalView()
     {
@@ -108,6 +125,7 @@ public sealed partial class TerminalView : Grid, IDisposable
         IsTabStop = false;
 
         SizeChanged += (_, _) => _resizeTimer.Start();
+        WindowShown += Invalidate;
         Loaded += OnLoaded;
         Unloaded += OnUnloaded;
     }
@@ -216,6 +234,7 @@ public sealed partial class TerminalView : Grid, IDisposable
 
     public void Dispose()
     {
+        WindowShown -= Invalidate;
         _stopRender = true;
         _wake.Set();
         _renderThread?.Join(500);
@@ -285,7 +304,7 @@ public sealed partial class TerminalView : Grid, IDisposable
             // Wake on output, or for the next cursor blink.
             _wake.WaitOne(BlinkMilliseconds);
             if (_stopRender) break;
-            if (!_visible) continue;
+            if (!_visible || !s_windowVisible) continue;
 
             // Idle, unfocused terminals draw nothing at all.
             bool blinkTick = _appearance.CursorBlink && _focused;
@@ -360,7 +379,10 @@ public sealed partial class TerminalView : Grid, IDisposable
             rows = buffer.Rows;
             if (_frame.Length != cols * rows) _frame = new Cell[cols * rows];
             for (int r = 0; r < rows; r++)
-                Array.Copy(buffer.ViewportLine(r).Cells, 0, _frame, r * cols, Math.Min(cols, buffer.ViewportLine(r).Cells.Length));
+            {
+                var line = buffer.ViewportLine(r).Cells;
+                Array.Copy(line, 0, _frame, r * cols, Math.Min(cols, line.Length));
+            }
             cursorCol = buffer.CursorCol;
             cursorRow = buffer.CursorRow;
             cursorVisible = buffer.CursorVisible && buffer.ScrollOffset == 0;
@@ -397,6 +419,8 @@ public sealed partial class TerminalView : Grid, IDisposable
         {
             ref readonly var cell = ref _frame[i];
             if (cell.Codepoint is 0 or 32 || (cell.Flags & CellFlags.WideTail) != 0) continue;
+            // Most cells are already in the atlas; skip the width lookup for those.
+            if (atlas.Contains(cell.Codepoint, StyleOf(cell.Flags))) continue;
             atlas.Request(cell.Codepoint, StyleOf(cell.Flags), CharWidth.Of(FirstCodepoint(cell.Codepoint)) == 2);
         }
         atlas.Flush(_device!);
@@ -769,6 +793,10 @@ public sealed partial class TerminalView : Grid, IDisposable
                     return;
                 case VirtualKey.F:
                     FindRequested?.Invoke(this, EventArgs.Empty);
+                    e.Handled = true;
+                    return;
+                case VirtualKey.I or VirtualKey.S when AppShortcut != null:
+                    AppShortcut(e.Key);
                     e.Handled = true;
                     return;
             }

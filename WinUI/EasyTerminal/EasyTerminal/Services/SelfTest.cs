@@ -207,16 +207,15 @@ internal static class SelfTest
             app.Store.Data.Devices.Remove(rdp);
         });
 
-        await Step("title bar snippet flyout", async () =>
+        await Step("snippet side panel", async () =>
         {
             window.Navigate("home");
-            var flyout = window.ShowSnippetFlyout();
+            var panel = window.ShowSnippetsForTest();
             await Task.Delay(700);
             await CaptureAsync(root, "titlebar");
-            var panel = (FrameworkElement)flyout.Content;
-            Log($"snippet flyout open={flyout.IsOpen} panel={panel.ActualWidth}x{panel.ActualHeight}");
-            await CaptureAsync(panel, "snippet-flyout");
-            flyout.Hide();
+            Log($"snippet panel pinned={panel.IsPinned} size={panel.ActualWidth}x{panel.ActualHeight}");
+            await CaptureAsync(panel, "snippet-panel");
+            window.ShowSnippetsForTest();
             await Task.Delay(300);
         });
 

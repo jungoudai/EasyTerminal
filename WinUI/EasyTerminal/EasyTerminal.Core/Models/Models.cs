@@ -187,9 +187,30 @@ public sealed class AppSettings
     public bool BoldIsBright { get; set; } = true;
     public string AssistantUrl { get; set; } = "https://chat.deepseek.com/";
     public double AssistantWidth { get; set; } = 440;
+    /// <summary>Pinned side panels take room from the terminal; floating ones lie on top so it keeps its size.</summary>
+    public bool AssistantPinned { get; set; } = true;
+    public bool SnippetsPinned { get; set; }
+    public double SnippetsWidth { get; set; } = 360;
+    /// <summary>The AI panel shows the built-in agent; off shows the web page at <see cref="AssistantUrl"/>.</summary>
+    public bool AssistantUsesAgent { get; set; } = true;
+    public AgentSettings Agent { get; set; } = new();
     /// <summary>Lets a scan ask ipinfo.io or ipapi.co where the machine is.</summary>
     public bool RegionLookup { get; set; } = true;
     public bool LogSessions { get; set; }
+}
+
+public enum AgentProvider { OpenAICompatible, Anthropic }
+
+/// <summary>The model behind the built-in agent. Most providers speak the OpenAI chat API at their own address.</summary>
+public sealed class AgentSettings
+{
+    public AgentProvider Provider { get; set; } = AgentProvider.OpenAICompatible;
+    public string Endpoint { get; set; } = "https://api.deepseek.com/v1";
+    public string Model { get; set; } = "deepseek-chat";
+    /// <summary>Stable id of the API key in the vault; null when none is saved.</summary>
+    public string? ApiKeySecretId { get; set; }
+    /// <summary>Lets the agent run commands without asking first. Off by default.</summary>
+    public bool AutoApproveCommands { get; set; }
 }
 
 /// <summary>Enough to reopen a tab on the next launch.</summary>

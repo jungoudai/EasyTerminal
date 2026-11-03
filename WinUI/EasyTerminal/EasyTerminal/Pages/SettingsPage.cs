@@ -86,8 +86,10 @@ public sealed class SettingsPage : UserControl, IRefreshablePage
             if (Uri.TryCreate(assistantUrl.Text.Trim(), UriKind.Absolute, out var uri) && uri.Scheme is "https" or "http") Update(s => s.AssistantUrl = uri.ToString());
             else assistantUrl.Text = _app.Store.Data.Settings.AssistantUrl;
         };
-        content.Children.Add(Row("AI 助手网址", assistantUrl));
+        content.Children.Add(Row("AI 助手网址（网页模式）", assistantUrl));
         content.Children.Add(Row("扫描设备时查询地区（向 ipinfo.io 或 ipapi.co 发送设备的公网地址）", Toggle(settings.RegionLookup, v => Update(s => s.RegionLookup = v))));
+
+        AddAgentSettings(content);
 
         content.Children.Add(Ui.Section("配置"));
         var transfer = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
@@ -98,6 +100,112 @@ public sealed class SettingsPage : UserControl, IRefreshablePage
         _app.ScanChanged += Refresh;
         Refresh();
         _loading = false;
+    }
+
+    private static readonly (string Name, AgentProvider Provider, string Endpoint, string Model)[] AgentPresets =
+    {
+        ("DeepSeek", AgentProvider.OpenAICompatible, "https://api.deepseek.com/v1", "deepseek-chat"),
+        ("通义千问", AgentProvider.OpenAICompatible, "https://dashscope.aliyuncs.com/compatible-mode/v1", "qwen-plus"),
+        ("Kimi", AgentProvider.OpenAICompatible, "https://api.moonshot.cn/v1", "kimi-latest"),
+        ("OpenAI", AgentProvider.OpenAICompatible, "https://api.openai.com/v1", "gpt-5-mini"),
+        ("Claude", AgentProvider.Anthropic, "https://api.anthropic.com", "claude-sonnet-5-5"),
+        ("Ollama（本机）", AgentProvider.OpenAICompatible, "http://localhost:11434/v1", "qwen3"),
+    };
+
+    private void AddAgentSettings(StackPanel content)
+    {
+        var agent = _app.Store.Data.Settings.Agent;
+        content.Children.Add(Ui.Section("AI Agent"));
+
+        var provider = new ComboBox { MinWidth = 260 };
+        provider.Items.Add(new ComboBoxItem { Content = "OpenAI 兼容接口", Tag = AgentProvider.OpenAICompatible });
+        provider.Items.Add(new ComboBoxItem { Content = "Anthropic", Tag = AgentProvider.Anthropic });
+        var endpoint = new TextBox { MinWidth = 260, Text = agent.Endpoint };
+        var model = new TextBox { MinWidth = 260, Text = agent.Model };
+        var key = new PasswordBox { MinWidth = 260, PlaceholderText = agent.ApiKeySecretId != null ? "已保存（输入新的以替换）" : "sk-…" };
+
+        void ShowValues()
+        {
+            provider.SelectedItem = provider.Items.Cast<ComboBoxItem>().First(i => (AgentProvider)i.Tag == agent.Provider);
+            endpoint.Text = agent.Endpoint;
+            model.Text = agent.Model;
+        }
+        ShowValues();
+
+        var preset = new ComboBox { MinWidth = 260, PlaceholderText = "选择服务商快速填写" };
+        foreach (var item in AgentPresets) preset.Items.Add(item.Name);
+        preset.SelectionChanged += (_, _) =>
+        {
+            if (preset.SelectedIndex < 0) return;
+            var chosen = AgentPresets[preset.SelectedIndex];
+            Update(s =>
+            {
+                s.Agent.Provider = chosen.Provider;
+                s.Agent.Endpoint = chosen.Endpoint;
+                s.Agent.Model = chosen.Model;
+            });
+            ShowValues();
+        };
+        content.Children.Add(Row("服务商", preset));
+
+        provider.SelectionChanged += (_, _) =>
+        {
+            if (provider.SelectedItem is ComboBoxItem { Tag: AgentProvider value }) Update(s => s.Agent.Provider = value);
+        };
+        content.Children.Add(Row("接口类型（DeepSeek、通义千问、Kimi、OpenAI、Ollama 等都用 OpenAI 兼容接口）", provider));
+
+        endpoint.LostFocus += (_, _) =>
+        {
+            string text = endpoint.Text.Trim();
+            if (Uri.TryCreate(text, UriKind.Absolute, out var uri) && uri.Scheme is "https" or "http") Update(s => s.Agent.Endpoint = text);
+            else endpoint.Text = agent.Endpoint;
+        };
+        content.Children.Add(Row("API 地址", endpoint));
+
+        model.LostFocus += (_, _) =>
+        {
+            if (model.Text.Trim().Length > 0) Update(s => s.Agent.Model = model.Text.Trim());
+            else model.Text = agent.Model;
+        };
+        content.Children.Add(Row("模型", model));
+
+        key.LostFocus += (_, _) =>
+        {
+            if (key.Password.Length == 0) return;
+            // Kept encrypted in the vault, like device passwords; settings only hold its id.
+            string id = _app.Store.Secrets.Set(agent.ApiKeySecretId, key.Password.Trim());
+            key.Password = "";
+            key.PlaceholderText = "已保存（输入新的以替换）";
+            Update(s => s.Agent.ApiKeySecretId = id);
+        };
+        content.Children.Add(Row("API 密钥（加密保存在本机）", key));
+
+        content.Children.Add(Row("允许 Agent 直接执行命令（不逐条确认）", Toggle(agent.AutoApproveCommands, v => Update(s => s.Agent.AutoApproveCommands = v))));
+
+        var result = Ui.Secondary("", true);
+        var test = Ui.Button("测试连接", Ui.GlyphPlay, () => { });
+        test.Click += async (_, _) =>
+        {
+            test.IsEnabled = false;
+            result.Text = "正在连接…";
+            try
+            {
+                using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+                result.Text = await Assistant.AgentChat.TestAsync(agent, _app.Store.Secrets.Get(agent.ApiKeySecretId), timeout.Token);
+            }
+            catch (Exception ex) when (ex is not OutOfMemoryException)
+            {
+                result.Text = "连接失败：" + ex.Message;
+            }
+            finally
+            {
+                test.IsEnabled = true;
+            }
+        };
+        var testRow = new StackPanel { Spacing = 6 };
+        testRow.Children.Add(test);
+        testRow.Children.Add(result);
+        content.Children.Add(Ui.Card(testRow, 12));
     }
 
     private async Task ExportAsync()

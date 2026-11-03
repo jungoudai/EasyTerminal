@@ -207,7 +207,10 @@ public sealed partial class MainWindow
         }
 
         yield return Command(Ui.GlyphBroadcast, _sessions.IsBroadcasting ? "关闭广播输入" : "开启广播输入", () => _sessions.SetBroadcasting(!_sessions.IsBroadcasting), "向所有运行中的终端发送相同的键盘输入");
-        yield return Command(Ui.GlyphAssistant, "打开或关闭 AI 助手", ToggleAssistant);
+        yield return Command(Ui.GlyphAssistant, "打开或关闭 AI 助手", ToggleAssistant, "Ctrl+Shift+A");
+        yield return Command(Ui.GlyphSnippet, "打开或关闭代码片段侧栏", ToggleSnippets, "Ctrl+Shift+S");
+        if (OpenSidePanel is { } side)
+            yield return Command("", side.IsPinned ? "侧栏改为悬浮（不占用终端空间）" : "侧栏固定到边缘", () => SetPinned(side, !side.IsPinned));
         yield return Command(Ui.GlyphHome, "打开主页", () => Navigate("home"));
         yield return Command(Ui.GlyphDevices, "打开设备", () => Navigate("devices"));
         yield return Command(Ui.GlyphSnippet, "打开代码片段", () => Navigate("snippets"));

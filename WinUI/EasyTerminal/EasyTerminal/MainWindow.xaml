@@ -31,7 +31,7 @@
                     Width="560"
                     Margin="0,6"
                     VerticalAlignment="Center"
-                    CornerRadius="16"
+                    CornerRadius="{ThemeResource ControlCornerRadius}"
                     PlaceholderText="搜索会话、连接和命令（Ctrl+Shift+P）"
                     QueryIcon="Find"
                     UpdateTextOnSelect="False"
@@ -58,17 +58,16 @@
                         </DataTemplate>
                     </AutoSuggestBox.ItemTemplate>
                 </AutoSuggestBox>
-                <Button
+                <ToggleButton
                     x:Name="SnippetsButton"
                     ToolTipService.ToolTip="代码片段"
                     AutomationProperties.Name="代码片段"
                     VerticalAlignment="Center"
                     Padding="8,6"
-                    Background="Transparent"
                     BorderThickness="0"
                     Click="OnSnippetsButtonClick">
                     <FontIcon Glyph="&#xE943;" FontSize="16" />
-                </Button>
+                </ToggleButton>
                 <ToggleButton
                     x:Name="AssistantButton"
                     ToolTipService.ToolTip="AI 助手"
@@ -113,7 +112,6 @@
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="*" />
                     <ColumnDefinition Width="Auto" />
-                    <ColumnDefinition Width="Auto" />
                 </Grid.ColumnDefinitions>
 
                 <InfoBar
@@ -130,8 +128,8 @@
                     </Grid.ColumnDefinitions>
                 </Grid>
 
-                <Grid x:Name="AssistantHandleHost" Grid.RowSpan="2" Grid.Column="1" Visibility="Collapsed" />
-                <Grid x:Name="AssistantHost" Grid.RowSpan="2" Grid.Column="2" Visibility="Collapsed" BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}" BorderThickness="1,0,0,0" />
+                <!-- Side panels. Pinned: column 1, beside the sessions. Floating: over the sessions, which keep their size. -->
+                <Grid x:Name="SideHost" Grid.RowSpan="2" Grid.Column="1" Visibility="Collapsed" />
             </Grid>
         </NavigationView>
     </Grid>

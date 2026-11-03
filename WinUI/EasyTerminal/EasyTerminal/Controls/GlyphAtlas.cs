@@ -17,6 +17,7 @@ internal sealed class GlyphAtlas : IDisposable
 
     private readonly Dictionary<long, Rect> _slots = new();
     private readonly List<(long Key, int Codepoint, int Style, bool Wide)> _pending = new();
+    private readonly HashSet<long> _pendingKeys = new();
     private readonly CanvasTextFormat[] _formats = new CanvasTextFormat[4];
     private CanvasRenderTarget? _texture;
     private int _nextX, _nextY;
@@ -70,9 +71,8 @@ internal sealed class GlyphAtlas : IDisposable
     public void Request(int codepoint, int style, bool wide)
     {
         long key = Key(codepoint, style);
-        if (_slots.ContainsKey(key)) return;
-        foreach (var pending in _pending)
-            if (pending.Key == key) return;
+        // A screen of new CJK text queues hundreds of glyphs; a set keeps that linear.
+        if (_slots.ContainsKey(key) || !_pendingKeys.Add(key)) return;
         _pending.Add((key, codepoint, style, wide));
     }
 
@@ -113,7 +113,10 @@ internal sealed class GlyphAtlas : IDisposable
             }
         }
         _pending.Clear();
+        _pendingKeys.Clear();
     }
+
+    public bool Contains(int codepoint, int style) => _slots.ContainsKey(Key(codepoint, style));
 
     public Rect Slot(int codepoint, int style) => _slots[Key(codepoint, style)];
 
