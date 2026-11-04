@@ -12,10 +12,19 @@ public static class OsIdentity
         ("truenas", "truenas"), ("unraid", "unraid"), ("synology", "synology"), ("qnap", "qnap"), ("openwrt", "openwrt"),
         ("ubuntu", "ubuntu"), ("debian", "debian"), ("centos", "centos"), ("fedora", "fedora"), ("rocky", "rockylinux"),
         ("alma", "almalinux"), ("red hat", "redhat"), ("opensuse", "opensuse"), ("suse", "suse"), ("arch linux", "archlinux"),
-        ("alpine", "alpinelinux"), ("gentoo", "gentoo"), ("nixos", "nixos"), ("void", "voidlinux"), ("slackware", "slackware"),
+        ("archlinux", "archlinux"), ("alpine", "alpinelinux"), ("gentoo", "gentoo"), ("nixos", "nixos"), ("void", "voidlinux"), ("slackware", "slackware"),
         ("freebsd", "freebsd"), ("openbsd", "openbsd"), ("macos", "apple"), ("mac os", "apple"), ("android", "android"),
         ("windows", "windows"),
     };
+
+    /// <summary>The logo a system or distribution name suggests, such as a WSL distribution called Ubuntu-24.04.</summary>
+    public static string? LogoForName(string name)
+    {
+        string lower = name.ToLowerInvariant();
+        foreach (var (match, logo) in Names)
+            if (lower.Contains(match, StringComparison.Ordinal)) return logo;
+        return null;
+    }
 
     /// <summary>The logo's file name without extension, or null when nothing is known about the system.</summary>
     public static string? LogoFor(DeviceFacts? facts)
@@ -23,8 +32,7 @@ public static class OsIdentity
         if (facts == null) return null;
         if (facts.ProxmoxVersion.Length > 0) return "proxmox";
         string os = facts.Os.ToLowerInvariant();
-        foreach (var (match, logo) in Names)
-            if (os.Contains(match, StringComparison.Ordinal)) return logo;
+        if (LogoForName(os) is { } named) return named;
         string kernel = facts.Kernel.ToLowerInvariant();
         if (kernel.StartsWith("darwin", StringComparison.Ordinal)) return "apple";
         if (kernel.StartsWith("freebsd", StringComparison.Ordinal)) return "freebsd";

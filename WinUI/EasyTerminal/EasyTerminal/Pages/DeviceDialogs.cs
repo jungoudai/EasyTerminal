@@ -138,7 +138,7 @@ public sealed class NetworkEditor : StackPanel
 public static class DeviceDialog
 {
     /// <summary>Edits an existing device, or creates one when <paramref name="existing"/> is null.</summary>
-    public static async Task<Device?> ShowAsync(Device? existing)
+    public static async Task<Device?> ShowAsync(Device? existing, string? folder = null)
     {
         var app = AppServices.Current;
         var device = existing ?? new Device();
@@ -151,8 +151,9 @@ public static class DeviceDialog
         kind.Items.Add(new ComboBoxItem { Content = "Telnet 设备", Tag = ConnectionProtocol.Telnet });
         kind.Items.Add(new ComboBoxItem { Content = "串口设备（主机地址填 COM3 这样的端口名）", Tag = ConnectionProtocol.Serial });
         kind.SelectedIndex = 0;
-        var group = new TextBox { Header = "分组（可选）", Text = device.Group, PlaceholderText = "例如：生产环境" };
+        var group = DevicesPage.FolderPicker(existing == null ? folder ?? "" : device.Group);
         var tags = new TextBox { Header = "标签（可选，用逗号分隔）", Text = string.Join(", ", device.Tags), PlaceholderText = "例如：db, 上海" };
+        var tagSuggestions = DevicesPage.TagSuggestions(tags);
         var forwardAgent = new CheckBox { Content = "转发 SSH Agent（只在信任此主机时开启）", IsChecked = device.ForwardAgent };
         var alternates = new TextBox
         {
@@ -203,6 +204,7 @@ public static class DeviceDialog
         organize.Children.Add(group.InColumn(0));
         organize.Children.Add(tags.InColumn(1));
         panel.Children.Add(organize);
+        if (tagSuggestions != null) panel.Children.Add(tagSuggestions);
         panel.Children.Add(user);
         panel.Children.Add(auth);
         panel.Children.Add(keyPicker);
@@ -243,8 +245,8 @@ public static class DeviceDialog
         device.KeyPath = keyPicker.Text?.Trim() ?? "";
         if (password.Password.Length > 0) device.PasswordSecretId = app.Store.Secrets.Set(device.PasswordSecretId, password.Password);
         network.ApplyTo(device.Network);
-        device.Group = group.Text.Trim();
-        device.Tags = tags.Text.Split(new[] { ',', '，' }, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).Distinct().ToList();
+        device.Group = FolderPath.Normalize(group.Text);
+        device.Tags = DevicesPage.ParseTags(tags.Text);
         device.ForwardAgent = forwardAgent.IsChecked == true;
         if (existing == null)
         {

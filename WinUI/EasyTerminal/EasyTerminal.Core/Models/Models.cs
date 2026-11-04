@@ -1,4 +1,5 @@
 using System.Text.Json.Serialization;
+using EasyTerminal.Core.Ssh;
 using EasyTerminal.Core.Terminal;
 
 namespace EasyTerminal.Core.Models;
@@ -67,7 +68,7 @@ public sealed class Device
     public NetworkProfile Network { get; set; } = new();
     public List<Connection> Connections { get; set; } = new();
     public bool IsExpanded { get; set; } = true;
-    /// <summary>Folder shown on the devices page; empty means ungrouped.</summary>
+    /// <summary>Folder shown on the devices page, nested with "/" such as 生产/上海; empty means ungrouped.</summary>
     public string Group { get; set; } = "";
     public List<string> Tags { get; set; } = new();
     public bool ForwardAgent { get; set; }
@@ -139,6 +140,47 @@ public sealed class DeviceFacts
     public List<string> Tools { get; set; } = new();
     public string PackageManager { get; set; } = "";
     public bool IsRoot { get; set; }
+    /// <summary>Proxmox node name and guests, kept so discovered VMs and containers show before the next scan.</summary>
+    public string ProxmoxNode { get; set; } = "";
+    public bool ProxmoxNeedsSudo { get; set; }
+    public List<PveGuest> Guests { get; set; } = new();
+}
+
+/// <summary>Device folders are paths such as 生产/上海; these keep them tidy and answer what lies inside what.</summary>
+public static class FolderPath
+{
+    public const char Separator = '/';
+
+    /// <summary>Trims each level and drops empty ones, so " a / /b " becomes "a/b".</summary>
+    public static string Normalize(string? path) =>
+        string.Join(Separator, (path ?? "").Split(new[] { '/', '\\' }).Select(p => p.Trim()).Where(p => p.Length > 0));
+
+    /// <summary>True when <paramref name="path"/> is <paramref name="folder"/> or lies below it; every path is within the root "".</summary>
+    public static bool IsWithin(string path, string folder) =>
+        folder.Length == 0 || path == folder || path.StartsWith(folder + Separator, StringComparison.Ordinal);
+
+    public static string Parent(string path)
+    {
+        int slash = path.LastIndexOf(Separator);
+        return slash < 0 ? "" : path[..slash];
+    }
+
+    public static string Leaf(string path) => path[(path.LastIndexOf(Separator) + 1)..];
+
+    public static string Combine(string parent, string child) => Normalize(parent.Length == 0 ? child : parent + Separator + child);
+
+    /// <summary>The folder and every folder above it, outermost first.</summary>
+    public static IEnumerable<string> SelfAndAncestors(string path)
+    {
+        if (path.Length == 0) yield break;
+        for (int slash = path.IndexOf(Separator); slash >= 0; slash = path.IndexOf(Separator, slash + 1))
+            yield return path[..slash];
+        yield return path;
+    }
+
+    /// <summary>Moves <paramref name="path"/> along when the folder it is in, or one above it, is renamed.</summary>
+    public static string Rename(string path, string from, string to) =>
+        from.Length > 0 && IsWithin(path, from) ? Normalize(to + path[from.Length..]) : path;
 }
 
 /// <summary>A saved piece of text sent to terminals; {{name}} placeholders are asked for when it runs.</summary>
@@ -287,4 +329,23 @@ public sealed class AppData
     public string GitHubLogin { get; set; } = "";
     /// <summary>Stable id of the GitHub token in the vault; null when not connected.</summary>
     public string? GitHubTokenSecretId { get; set; }
+    /// <summary>Device folders the user created, kept even while empty. Folders that devices name exist anyway.</summary>
+    public List<string> DeviceFolders { get; set; } = new();
+    /// <summary>Folders and sections folded on the devices page.</summary>
+    public List<string> CollapsedFolders { get; set; } = new();
+
+    /// <summary>Every device folder, parents included, in display order.</summary>
+    public List<string> AllDeviceFolders() =>
+        DeviceFolders.Concat(Devices.Select(d => d.Group))
+            .SelectMany(FolderPath.SelfAndAncestors)
+            .Distinct()
+            .OrderBy(f => f, StringComparer.CurrentCulture)
+            .ToList();
+
+    /// <summary>Every tag in use with how many devices carry it, most used first.</summary>
+    public List<(string Tag, int Count)> AllDeviceTags() =>
+        Devices.SelectMany(d => d.Tags).GroupBy(t => t, StringComparer.OrdinalIgnoreCase)
+            .Select(g => (g.First(), g.Count()))
+            .OrderByDescending(t => t.Item2).ThenBy(t => t.Item1, StringComparer.CurrentCulture)
+            .ToList();
 }

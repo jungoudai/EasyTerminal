@@ -52,6 +52,7 @@ public static class Ui
     public const string GlyphMore = "";
     public const string GlyphRename = "";
     public const string GlyphLog = "";
+    public const string GlyphTag = "";
 
     public static string GlyphFor(ConnectionProtocol protocol) => protocol switch
     {

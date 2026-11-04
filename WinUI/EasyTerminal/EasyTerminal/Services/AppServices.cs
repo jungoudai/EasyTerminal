@@ -181,10 +181,42 @@ public sealed class AppServices
     public Task StopRemoteSessionAsync(Device device, RemoteSession session) =>
         RunRemoteActionAsync(device, RemoteProbe.StopCommand(session.Kind, session.Name), TimeSpan.FromSeconds(30));
 
+    /// <summary>From this run's scan, or the one saved with the device before it.</summary>
+    public bool ProxmoxNeedsSudo(Device device) =>
+        Probes.TryGetValue(device.Id, out var probe) ? probe.ProxmoxNeedsSudo : device.Facts?.ProxmoxNeedsSudo == true;
+
+    public string ProxmoxNode(Device device) =>
+        Probes.TryGetValue(device.Id, out var probe) ? probe.ProxmoxNode : device.Facts?.ProxmoxNode ?? "";
+
+    /// <summary>Proxmox guests on a host as last seen, live when it was scanned this run.</summary>
+    public IReadOnlyList<PveGuest> ProxmoxGuests(Device device) =>
+        Probes.TryGetValue(device.Id, out var probe) ? probe.Guests : (IReadOnlyList<PveGuest>?)device.Facts?.Guests ?? Array.Empty<PveGuest>();
+
+    /// <summary>Finds WSL distributions again and asks every Proxmox host for its guests.</summary>
+    public async Task RefreshDiscoveryAsync()
+    {
+        var hosts = Store.Data.Devices.Where(d => d.Facts?.HasProxmox == true && !ProbingDevices.Contains(d.Id)).ToList();
+        var tasks = new List<Task> { ScanLocalAsync() };
+        foreach (var host in hosts) tasks.Add(ProbeQuietlyAsync(host));
+        await Task.WhenAll(tasks);
+    }
+
+    private async Task ProbeQuietlyAsync(Device device)
+    {
+        try
+        {
+            await ProbeAsync(device);
+        }
+        catch (Exception ex)
+        {
+            App.MainWindowInstance?.ShowNotice($"无法扫描 {device.Name}", ex.Message, Microsoft.UI.Xaml.Controls.InfoBarSeverity.Warning);
+        }
+    }
+
     /// <summary>Asks a Proxmox host for a VM's address through the QEMU guest agent.</summary>
     public async Task<string?> GetVmAddressAsync(Device device, PveGuest guest)
     {
-        bool sudo = Probes.TryGetValue(device.Id, out var probe) && probe.ProxmoxNeedsSudo;
+        bool sudo = ProxmoxNeedsSudo(device);
         var result = await Task.Run(() => Ssh.RunRemoteAsync(device, null, ProxmoxCommands.AgentInterfaces(guest.Id, sudo), TimeSpan.FromSeconds(20)));
         return result.ExitCode == 0 ? ProxmoxCommands.ParseAgentAddress(result.Output) : null;
     }

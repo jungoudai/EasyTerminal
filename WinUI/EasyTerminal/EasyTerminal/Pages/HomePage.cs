@@ -228,7 +228,7 @@ public sealed class HomePage : UserControl, IRefreshablePage, IHomeEditor
         {
             group = new ComboBox { Header = "显示哪个分组的设备", HorizontalAlignment = HorizontalAlignment.Stretch };
             group.Items.Add(new ComboBoxItem { Content = "全部设备", Tag = "" });
-            foreach (var name in _app.Store.Data.Devices.Select(d => d.Group).Where(g => g.Length > 0).Distinct().Order())
+            foreach (var name in _app.Store.Data.AllDeviceFolders())
                 group.Items.Add(new ComboBoxItem { Content = name, Tag = name });
             group.SelectedItem = group.Items.Cast<ComboBoxItem>().FirstOrDefault(i => (string)i.Tag == widget.Group) ?? group.Items[0];
             panel.Children.Add(group);

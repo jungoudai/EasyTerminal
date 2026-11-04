@@ -38,6 +38,7 @@ public sealed class AppStore
             foreach (var device in Data.Devices)
             {
                 device.MergeStatusSessions();
+                device.Group = FolderPath.Normalize(device.Group);
                 if (device.Connections.Any(c => c.Protocol == ConnectionProtocol.Ssh)) device.OfferBuiltInSessions();
             }
         }

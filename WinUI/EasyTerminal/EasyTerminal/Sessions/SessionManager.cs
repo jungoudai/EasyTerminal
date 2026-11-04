@@ -274,7 +274,7 @@ public sealed class SessionManager
     /// <summary>Opens a shell in a Proxmox guest, offering to start it first when it is stopped.</summary>
     public async Task OpenGuestAsync(Device device, PveGuest guest)
     {
-        bool sudo = _app.Probes.TryGetValue(device.Id, out var probe) && probe.ProxmoxNeedsSudo;
+        bool sudo = _app.ProxmoxNeedsSudo(device);
         if (!guest.IsRunning)
         {
             if (!await Dialogs.ConfirmAsync($"{guest.Name} 没有运行", $"要先在 {device.Name} 上启动它再连接吗？", "启动并连接")) return;

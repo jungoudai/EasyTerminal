@@ -78,7 +78,8 @@ internal static class SelfTest
         app.Store.Data.Devices.Add(sample);
         app.Probes[sample.Id] = RemoteProbe.Parse("@@ENV\ntermux\ntmux\n@@SYS\nhost=pve1\nos=Debian GNU/Linux 12 (bookworm)\nkernel=Linux 6.8\narch=x86_64\ncpus=16\nmemkb=65536000\nload=0.50 1.25 2.00\nuptime=864000\n@@TMUX\n3|1|1700000000|main\n@@TMUXWIN\n0\t1\t1\tvim\tmain\teditor\n1\t3\t0\tbash\tmain\tlogs\n@@HERDR\n{\"sessions\":[{\"name\":\"agents\",\"default\":false,\"running\":true}]}\n@@DOCKER\n{\"ID\":\"c1\",\"Names\":\"nginx-web\",\"Image\":\"nginx:latest\",\"State\":\"running\"}\n{\"ID\":\"c2\",\"Names\":\"postgres\",\"Image\":\"postgres:16\",\"State\":\"exited\"}\n@@PVE\nnode=pve1\nsudo=\nuid=0\n@@PCT\nVMID Status Lock Name\n101 running  dns\n102 stopped  build\n@@QM\nVMID NAME STATUS MEM(MB) BOOTDISK(GB) PID\n200 win11 running 8192 64.00 1234\n@@TOOLS\nhtop\nbtop\nncdu\nmtr\niftop\nvnstat\npm=apt-get\n@@GEO\n{\"ip\":\"203.0.113.5\",\"city\":\"Tokyo\",\"region\":\"Tokyo\",\"country\":\"JP\",\"org\":\"AS64500 Example\"}\n@@END\n");
         sample.Facts = app.Probes[sample.Id].Facts;
-        sample.Group = "实验室";
+        sample.Group = "实验室/东京";
+        app.Store.Data.DeviceFolders = new List<string> { "生产" };
         sample.Tags = new List<string> { "pve", "东京" };
         app.Store.Data.Snippets.Clear();
         app.Store.Data.Snippets.Add(new Snippet { Name = "查看容器日志", Group = "Docker", Description = "跟随最新输出", Body = "docker logs -f --tail 100 {{容器}}" });
@@ -97,6 +98,18 @@ internal static class SelfTest
                 await CaptureAsync(root, page);
             });
         }
+
+        await Step("devices page folders and discovered guests", async () =>
+        {
+            window.Navigate("devices");
+            await Task.Delay(500);
+            var page = FindAll<DevicesPage>(root).First();
+            var scroller = (ScrollViewer)page.Content;
+            scroller.ChangeView(null, scroller.ScrollableHeight, null, true);
+            await Task.Delay(800);
+            await CaptureAsync(root, "devices-lower");
+            scroller.ChangeView(null, 0, null, true);
+        });
 
         await Step("home with every widget", async () =>
         {

@@ -70,7 +70,7 @@ public abstract class HomeWidgetView : IDisposable
     public virtual void Dispose() => Unloaded();
 
     protected IEnumerable<Device> FilteredDevices() =>
-        App.Store.Data.Devices.Where(d => Model.Group.Length == 0 || d.Group == Model.Group);
+        App.Store.Data.Devices.Where(d => FolderPath.IsWithin(d.Group, Model.Group));
 
     protected static void Navigate(string page) => EasyTerminal.App.MainWindowInstance?.Navigate(page);
 

@@ -14,6 +14,7 @@ public sealed record TmuxWindow(string Session, int Index, string Name, int Pane
 
 public sealed record PveGuest(PveGuestKind Kind, int Id, string Name, string Status, string Detail)
 {
+    [System.Text.Json.Serialization.JsonIgnore]
     public bool IsRunning => Status.Equals("running", StringComparison.OrdinalIgnoreCase);
 }
 
@@ -175,6 +176,9 @@ public static class RemoteProbe
             facts.Tools = tools;
             facts.PackageManager = packageManager;
             facts.IsRoot = sys.TryGetValue("uid", out var uid) && uid.Trim() == "0";
+            facts.ProxmoxNode = pveNode;
+            facts.ProxmoxNeedsSudo = pveSudo;
+            facts.Guests = guests.ToList();
             // Termux has no os-release, and its kernel alone would read as plain Linux.
             if (termux && facts.Os.Length == 0) facts.Os = "Android (Termux)";
         }

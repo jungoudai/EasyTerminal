@@ -320,111 +320,23 @@ public sealed class ResourcePane : UserControl, ISessionPanel
         }
         if (probe.ProxmoxError != null) _body.Children.Add(Ui.Secondary(probe.ProxmoxError, true));
         else if (probe.Guests.Count == 0) _body.Children.Add(Ui.Secondary("这个节点上没有虚拟机或容器。"));
-        foreach (var guest in probe.Guests) _body.Children.Add(BuildGuest(guest, probe));
+        foreach (var guest in probe.Guests) _body.Children.Add(BuildGuest(guest));
     }
 
-    private FrameworkElement BuildGuest(PveGuest guest, ProbeResult probe)
+    private FrameworkElement BuildGuest(PveGuest guest)
     {
         bool isLxc = guest.Kind == PveGuestKind.Lxc;
         var row = Ui.Columns("auto", "*", "auto", "auto");
-        row.Children.Add(Ui.Icon(isLxc ? Ui.GlyphContainer : Ui.GlyphVm).InColumn(0));
+        row.Children.Add(Ui.Icon(GuestActions.Glyph(guest)).InColumn(0));
         var text = new StackPanel();
         text.Children.Add(Ui.Strong($"{guest.Id} · {guest.Name}"));
-        text.Children.Add(Ui.Secondary($"{guest.Detail} · {(guest.IsRunning ? "运行中" : guest.Status == "stopped" ? "已停止" : guest.Status)}"));
+        text.Children.Add(Ui.Secondary($"{guest.Detail} · {GuestActions.DescribeStatus(guest)}"));
         row.Children.Add(text.InColumn(1));
 
-        var enter = isLxc
-            ? Ui.Button("进入", Ui.GlyphPlay, () => _ = _sessions.OpenGuestAsync(_device, guest), accent: true)
-            : Ui.Button("网页控制台", Ui.GlyphGlobe, () => OpenWebConsole(guest, probe), accent: true);
+        var enter = Ui.Button(isLxc ? "进入" : "网页控制台", isLxc ? Ui.GlyphPlay : Ui.GlyphGlobe, () => GuestActions.Enter(_sessions, _device, guest), accent: true);
         row.Children.Add(enter.InColumn(2));
-        row.Children.Add(Ui.MenuButton(Ui.GlyphMore, "更多操作", menu =>
-        {
-            if (!isLxc)
-            {
-                menu.Items.Add(Ui.MenuItem("串口控制台（qm terminal）", Ui.GlyphTerminal, () => _ = _sessions.OpenGuestAsync(_device, guest)));
-                menu.Items.Add(Ui.MenuItem("通过 SSH 连接系统内部", Ui.GlyphTerminal, () => _ = OpenThroughHostAsync(guest, ConnectionProtocol.Ssh)));
-                menu.Items.Add(Ui.MenuItem("通过 RDP 连接系统内部", Ui.GlyphRemoteDesktop, () => _ = OpenThroughHostAsync(guest, ConnectionProtocol.Rdp)));
-            }
-            else
-            {
-                menu.Items.Add(Ui.MenuItem("网页控制台", Ui.GlyphGlobe, () => OpenWebConsole(guest, probe)));
-            }
-            menu.Items.Add(new MenuFlyoutSeparator());
-            if (guest.IsRunning)
-            {
-                menu.Items.Add(Ui.MenuItem("重启", Ui.GlyphRefresh, () => _ = GuestActionAsync(guest, "reboot", "重启", probe)));
-                menu.Items.Add(Ui.MenuItem("关机", Ui.GlyphStop, () => _ = GuestActionAsync(guest, "shutdown", "关机", probe)));
-                menu.Items.Add(Ui.MenuItem("强制停止", Ui.GlyphStop, () => _ = GuestActionAsync(guest, "stop", "强制停止", probe)));
-            }
-            else
-            {
-                menu.Items.Add(Ui.MenuItem("启动", Ui.GlyphPlay, () => _ = GuestActionAsync(guest, "start", "启动", probe)));
-            }
-        }).InColumn(3));
+        row.Children.Add(Ui.MenuButton(Ui.GlyphMore, "更多操作", menu => GuestActions.AddMenuItems(menu.Items, _sessions, _device, guest)).InColumn(3));
         return Ui.Card(row, 12);
-    }
-
-    private void OpenWebConsole(PveGuest guest, ProbeResult probe)
-    {
-        string host = HostEndpoint.Parse(_device.Host).Host;
-        _sessions.OpenWeb($"{guest.Name} 控制台", ProxmoxCommands.WebConsoleUrl(host.Contains(':') ? $"[{host}]" : host, probe.ProxmoxNode, guest), _device);
-    }
-
-    /// <summary>Saves the guest as a device behind this host, so the host can serve as its jump server.</summary>
-    private async Task OpenThroughHostAsync(PveGuest guest, ConnectionProtocol protocol)
-    {
-        var existing = _app.Store.Data.Devices.FirstOrDefault(d => d.Name == guest.Name && d.Network.JumpDeviceIds.Contains(_device.Id));
-        var saved = existing?.Connections.FirstOrDefault(c => c.Protocol == protocol);
-        if (existing != null && saved != null)
-        {
-            await _sessions.OpenConnectionAsync(existing, saved);
-            return;
-        }
-
-        string? address = existing?.Host;
-        if (address == null)
-        {
-            try
-            {
-                address = await _app.GetVmAddressAsync(_device, guest);
-            }
-            catch (Exception ex) when (ex is IOException or TimeoutException)
-            {
-                address = null;
-            }
-        }
-        var ip = new TextBox { Header = "虚拟机地址", Text = address ?? "", PlaceholderText = "未能通过 QEMU Guest Agent 获取，请手动填写" };
-        var user = new TextBox { Header = "用户名", Text = existing?.User ?? "" };
-        var panel = new StackPanel { Spacing = 8, MinWidth = 400 };
-        panel.Children.Add(ip);
-        panel.Children.Add(user);
-        panel.Children.Add(Ui.Secondary($"连接会经 {_device.Name} 跳转，并保存为一台设备。", true));
-        var dialog = new ContentDialog { Title = $"连接到 {guest.Name}", Content = panel, PrimaryButtonText = "连接", CloseButtonText = "取消", DefaultButton = ContentDialogButton.Primary };
-        if (await Dialogs.ShowAsync(dialog) != ContentDialogResult.Primary || string.IsNullOrWhiteSpace(ip.Text)) return;
-
-        var target = existing;
-        if (target == null)
-        {
-            target = new Device { Name = guest.Name, Host = ip.Text.Trim(), User = user.Text.Trim(), Group = _device.Name };
-            target.Network.JumpDeviceIds.Add(_device.Id);
-            _app.Store.Data.Devices.Add(target);
-        }
-        else
-        {
-            target.Host = ip.Text.Trim();
-            target.User = user.Text.Trim();
-        }
-        var connection = new Connection { Name = protocol == ConnectionProtocol.Rdp ? "远程桌面" : "SSH", Protocol = protocol };
-        target.Connections.Add(connection);
-        if (protocol == ConnectionProtocol.Ssh) target.OfferBuiltInSessions();
-        _app.NotifyDevicesChanged();
-        await _sessions.OpenConnectionAsync(target, connection);
-    }
-
-    private async Task GuestActionAsync(PveGuest guest, string action, string label, ProbeResult probe)
-    {
-        if (action != "start" && !await Dialogs.ConfirmAsync($"{label} {guest.Name}？", action == "stop" ? "相当于直接断电，未保存的数据会丢失。" : "其中运行的程序会结束。", label, destructive: true)) return;
-        await RunAsync($"无法{label} {guest.Name}", ProxmoxCommands.Action(guest, action, probe.ProxmoxNeedsSudo), TimeSpan.FromMinutes(5));
     }
 
     public void Dispose() => _app.DevicesChanged -= OnDevicesChanged;

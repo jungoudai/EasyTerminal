@@ -765,3 +765,81 @@ public class ExportImportTests
         Assert.False(Assert.Single(target.Data.PortForwards).AutoStart);
     }
 }
+
+public class DeviceFolderTests
+{
+    [Fact]
+    public void NormalizesAndNestsFolderPaths()
+    {
+        Assert.Equal("生产/上海", FolderPath.Normalize(" 生产 / /上海/ "));
+        Assert.Equal("a/b", FolderPath.Normalize(@"a\b"));
+        Assert.Equal(new[] { "a", "a/b", "a/b/c" }, FolderPath.SelfAndAncestors("a/b/c"));
+        Assert.Empty(FolderPath.SelfAndAncestors(""));
+        Assert.Equal("a/b", FolderPath.Parent("a/b/c"));
+        Assert.Equal("", FolderPath.Parent("a"));
+        Assert.Equal("c", FolderPath.Leaf("a/b/c"));
+        Assert.True(FolderPath.IsWithin("a/b", "a"));
+        Assert.True(FolderPath.IsWithin("a", ""));
+        Assert.False(FolderPath.IsWithin("ab", "a"));
+    }
+
+    [Fact]
+    public void RenamingAFolderMovesWhatIsInside()
+    {
+        Assert.Equal("x/y/c", FolderPath.Rename("a/b/c", "a/b", "x/y"));
+        Assert.Equal("x", FolderPath.Rename("a", "a", "x"));
+        Assert.Equal("ab", FolderPath.Rename("ab", "a", "x"));
+    }
+
+    [Fact]
+    public void ListsFoldersWithParentsAndTagsByUse()
+    {
+        var data = new AppData { DeviceFolders = { "空" } };
+        data.Devices.Add(new Device { Group = "生产/上海", Tags = { "db", "pve" } });
+        data.Devices.Add(new Device { Group = "", Tags = { "DB" } });
+        Assert.Equal(new[] { "空", "生产", "生产/上海" }.Order(StringComparer.CurrentCulture), data.AllDeviceFolders());
+        var tags = data.AllDeviceTags();
+        Assert.Equal(("db", 2), tags[0]);
+        Assert.Equal(("pve", 1), tags[1]);
+    }
+
+    [Fact]
+    public void ScanKeepsProxmoxGuestsInSavedFacts()
+    {
+        const string sample = "@@SYS\nhost=pve1\nos=Debian GNU/Linux 12\nkernel=Linux 6.8\n@@PVE\nnode=pve1\nsudo=sudo -n\nuid=1000\n" +
+            "@@PCT\nVMID Status Lock Name\n101 running  dns\n@@QM\nVMID NAME STATUS MEM(MB) BOOTDISK(GB) PID\n200 win11 stopped 8192 64.00 0\n@@END\n";
+        var facts = RemoteProbe.Parse(sample).Facts!;
+        Assert.Equal("pve1", facts.ProxmoxNode);
+        Assert.True(facts.ProxmoxNeedsSudo);
+        Assert.Equal(2, facts.Guests.Count);
+
+        string directory = Path.Combine(Path.GetTempPath(), "et-folders-" + Guid.NewGuid());
+        try
+        {
+            var store = new AppStore(directory);
+            store.Data.Devices.Add(new Device { Name = "pve", Group = " 实验室 / pve ", Facts = facts });
+            store.Save();
+            var reloaded = new AppStore(directory);
+            reloaded.Load();
+            var device = Assert.Single(reloaded.Data.Devices);
+            Assert.Equal("实验室/pve", device.Group);
+            var guests = device.Facts!.Guests;
+            Assert.Equal(new PveGuest(PveGuestKind.Lxc, 101, "dns", "running", "LXC"), guests[0]);
+            Assert.True(guests[0].IsRunning);
+            Assert.False(guests[1].IsRunning);
+        }
+        finally
+        {
+            Directory.Delete(directory, true);
+        }
+    }
+
+    [Fact]
+    public void PicksLogosForWslDistributionNames()
+    {
+        Assert.Equal("ubuntu", OsIdentity.LogoForName("Ubuntu-24.04"));
+        Assert.Equal("debian", OsIdentity.LogoForName("Debian"));
+        Assert.Equal("archlinux", OsIdentity.LogoForName("archlinux"));
+        Assert.Null(OsIdentity.LogoForName("docker-desktop"));
+    }
+}

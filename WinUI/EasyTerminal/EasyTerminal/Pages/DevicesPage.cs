@@ -6,17 +6,28 @@ using EasyTerminal.Services;
 using EasyTerminal.Sessions;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
+using Windows.ApplicationModel.DataTransfer;
 
 namespace EasyTerminal.Pages;
 
-/// <summary>The machine list and the place every new session starts: this computer and all saved devices.</summary>
+/// <summary>
+/// The machine list and the place every new session starts: this computer, saved devices in nested
+/// folders, filtered by tags, and what was found on its own (WSL distributions and Proxmox guests).
+/// </summary>
 public sealed class DevicesPage : UserControl, IRefreshablePage
 {
+    private const string DiscoveredKey = "::discovered";
+    private const string DragPrefix = "easyterminal-device:";
+    private const double Indent = 22;
+
     private readonly AppServices _app = AppServices.Current;
     private readonly SessionManager _sessions;
     private readonly StackPanel _list = new() { Spacing = 6, Margin = new Thickness(0, 4, 0, 0) };
     private readonly TextBox _quickConnect = new() { PlaceholderText = "user@host:22" };
-    private readonly TextBox _filter = new() { PlaceholderText = "按名称、地址、分组、标签、系统或地区筛选" };
+    private readonly TextBox _filter = new() { PlaceholderText = "按名称、地址、文件夹、标签、系统或地区筛选" };
+    private readonly WrapPanel _tagBar = new();
+    /// <summary>Tags a device must all carry to be listed; clicking a tag on a card or in the bar toggles it.</summary>
+    private readonly HashSet<string> _tagFilter = new(StringComparer.OrdinalIgnoreCase);
 
     public DevicesPage(SessionManager sessions)
     {
@@ -24,10 +35,11 @@ public sealed class DevicesPage : UserControl, IRefreshablePage
         var (root, content) = Ui.Page();
         Content = root;
 
-        var header = Ui.Columns("*", "auto", "auto");
+        var header = Ui.Columns("*", "auto", "auto", "auto");
         header.Children.Add(Ui.Title("设备").InColumn(0));
-        header.Children.Add(Ui.Button("从 SSH 配置导入", Ui.GlyphDownload, () => _ = ImportSshConfigAsync()).InColumn(1));
-        header.Children.Add(Ui.Button("添加设备", Ui.GlyphAdd, () => _ = AddDeviceAsync(), accent: true).InColumn(2));
+        header.Children.Add(Ui.Button("新建文件夹", Ui.GlyphFolder, () => _ = NewFolderAsync("")).InColumn(1));
+        header.Children.Add(Ui.Button("从 SSH 配置导入", Ui.GlyphDownload, () => _ = ImportSshConfigAsync()).InColumn(2));
+        header.Children.Add(Ui.Button("添加设备", Ui.GlyphAdd, () => _ = AddDeviceAsync(), accent: true).InColumn(3));
         content.Children.Add(header);
 
         var quick = Ui.Columns("*", "auto");
@@ -39,6 +51,7 @@ public sealed class DevicesPage : UserControl, IRefreshablePage
         };
         content.Children.Add(Ui.Card(quick));
         content.Children.Add(_filter);
+        content.Children.Add(_tagBar);
         _filter.TextChanged += (_, _) => Refresh();
         content.Children.Add(_list);
 
@@ -47,32 +60,443 @@ public sealed class DevicesPage : UserControl, IRefreshablePage
         Refresh();
     }
 
+    private bool IsFiltering => _filter.Text.Trim().Length > 0 || _tagFilter.Count > 0;
+
     public void Refresh()
     {
         _list.Children.Clear();
+        BuildTagBar();
         string query = _filter.Text.Trim();
         var matches = _app.Store.Data.Devices.Where(d => Matches(d, query)).ToList();
+        var folders = _app.Store.Data.AllDeviceFolders();
 
-        // Ungrouped devices share a grid with this computer; each named group gets its own heading and grid.
+        // Unfiled devices share a grid with this computer; each folder gets a heading, its devices, then its subfolders.
         var first = new CardGridPanel();
-        if (query.Length == 0) first.Children.Add(BuildLocalCard());
+        if (!IsFiltering) first.Children.Add(BuildLocalCard());
         foreach (var device in matches.Where(d => d.Group.Length == 0)) first.Children.Add(BuildCard(device));
         if (first.Children.Count > 0) _list.Children.Add(first);
-        foreach (var group in matches.Where(d => d.Group.Length > 0).GroupBy(d => d.Group))
-        {
-            _list.Children.Add(Ui.Section(group.Key));
-            var grid = new CardGridPanel();
-            foreach (var device in group) grid.Children.Add(BuildCard(device));
-            _list.Children.Add(grid);
-        }
-        if (query.Length > 0 && matches.Count == 0) _list.Children.Add(Ui.Secondary("没有匹配的设备。"));
+        foreach (var folder in folders.Where(f => FolderPath.Parent(f).Length == 0)) AddFolder(folder, 0, folders, matches);
+
+        bool anyDiscovered = _tagFilter.Count == 0 && AddDiscovered(query);
+        if (IsFiltering && matches.Count == 0 && !anyDiscovered) _list.Children.Add(Ui.Secondary("没有匹配的设备。"));
     }
 
-    private static bool Matches(Device device, string query)
+    private bool Matches(Device device, string query)
     {
+        if (_tagFilter.Any(t => !device.Tags.Contains(t, StringComparer.OrdinalIgnoreCase))) return false;
         if (query.Length == 0) return true;
         var fields = new[] { device.Name, device.Host, device.User, device.Group, device.Facts?.Os ?? "", device.Facts?.CountryCode ?? "", device.Facts?.City ?? "" }.Concat(device.Tags);
         return fields.Any(f => f.Contains(query, StringComparison.OrdinalIgnoreCase));
+    }
+
+    private bool IsCollapsed(string key) => !IsFiltering && _app.Store.Data.CollapsedFolders.Contains(key);
+
+    private void ToggleCollapsed(string key)
+    {
+        var collapsed = _app.Store.Data.CollapsedFolders;
+        if (!collapsed.Remove(key)) collapsed.Add(key);
+        _app.Store.Save();
+        Refresh();
+    }
+
+    // ---- Tags --------------------------------------------------------------------------------
+
+    private void BuildTagBar()
+    {
+        _tagBar.Children.Clear();
+        var tags = _app.Store.Data.AllDeviceTags();
+        _tagFilter.RemoveWhere(t => !tags.Any(x => x.Tag.Equals(t, StringComparison.OrdinalIgnoreCase)));
+        _tagBar.Visibility = tags.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
+        foreach (var (tag, count) in tags) _tagBar.Children.Add(TagPill(tag, count));
+        if (_tagFilter.Count > 0) _tagBar.Children.Add(Ui.Chip(Ui.GlyphClose, "清除标签筛选", "显示所有设备", () =>
+        {
+            _tagFilter.Clear();
+            Refresh();
+        }));
+    }
+
+    /// <summary>A tag as a small toggle; selected tags narrow the list to devices that carry them all.</summary>
+    private FrameworkElement TagPill(string tag, int? count = null)
+    {
+        bool selected = _tagFilter.Contains(tag);
+        var button = new Button
+        {
+            Content = new TextBlock { Text = "# " + tag + (count is { } n ? $"  {n}" : ""), FontSize = 11 },
+            Padding = new Thickness(8, 2, 8, 3),
+            MinHeight = 0,
+            MinWidth = 0,
+            CornerRadius = new CornerRadius(10),
+            BorderThickness = new Thickness(selected ? 0 : 1),
+        };
+        if (selected) button.Style = (Style)Application.Current.Resources["AccentButtonStyle"];
+        ToolTipService.SetToolTip(button, selected ? $"取消按“{tag}”筛选" : $"只看标签为“{tag}”的设备");
+        button.Click += (_, _) =>
+        {
+            if (!_tagFilter.Remove(tag)) _tagFilter.Add(tag);
+            Refresh();
+        };
+        return button;
+    }
+
+    public static List<string> ParseTags(string text) =>
+        text.Split(new[] { ',', '，', ';', '；' }, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Select(t => t.TrimStart('#').Trim())
+            .Where(t => t.Length > 0)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+    /// <summary>Tags already in use, as buttons that add or remove themselves from <paramref name="box"/>; null when there are none.</summary>
+    public static FrameworkElement? TagSuggestions(TextBox box)
+    {
+        var known = AppServices.Current.Store.Data.AllDeviceTags();
+        if (known.Count == 0) return null;
+        var panel = new WrapPanel();
+        panel.Children.Add(new TextBlock { Text = "已有标签：", FontSize = 12, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 0, 4, 6), Foreground = Ui.Brush("TextFillColorSecondaryBrush") });
+        foreach (var (tag, _) in known)
+        {
+            var button = new Button { Content = new TextBlock { Text = "# " + tag, FontSize = 11 }, Padding = new Thickness(8, 2, 8, 3), MinHeight = 0, MinWidth = 0, CornerRadius = new CornerRadius(10) };
+            button.Click += (_, _) =>
+            {
+                var current = ParseTags(box.Text);
+                int existing = current.FindIndex(t => t.Equals(tag, StringComparison.OrdinalIgnoreCase));
+                if (existing >= 0) current.RemoveAt(existing);
+                else current.Add(tag);
+                box.Text = string.Join(", ", current);
+            };
+            panel.Children.Add(button);
+        }
+        return panel;
+    }
+
+    private async Task EditTagsAsync(Device device)
+    {
+        var box = new TextBox { Header = "标签（用逗号分隔）", Text = string.Join(", ", device.Tags), PlaceholderText = "例如：db, 上海" };
+        var panel = new StackPanel { Spacing = 8, MinWidth = 400 };
+        panel.Children.Add(box);
+        if (TagSuggestions(box) is { } suggestions) panel.Children.Add(suggestions);
+        var dialog = new ContentDialog { Title = $"{device.Name} 的标签", Content = panel, PrimaryButtonText = "保存", CloseButtonText = "取消", DefaultButton = ContentDialogButton.Primary };
+        if (await Dialogs.ShowAsync(dialog) != ContentDialogResult.Primary) return;
+        device.Tags = ParseTags(box.Text);
+        _app.NotifyDevicesChanged();
+    }
+
+    // ---- Folders -----------------------------------------------------------------------------
+
+    /// <summary>An editable list of folders for dialogs; type a new path such as 生产/上海 to make one.</summary>
+    public static ComboBox FolderPicker(string current)
+    {
+        var picker = new ComboBox
+        {
+            Header = "文件夹（可选，用 / 分隔子文件夹）",
+            IsEditable = true,
+            HorizontalAlignment = HorizontalAlignment.Stretch,
+            PlaceholderText = "例如：生产/上海",
+        };
+        foreach (var folder in AppServices.Current.Store.Data.AllDeviceFolders()) picker.Items.Add(folder);
+        picker.Text = current;
+        if (picker.Items.Contains(current)) picker.SelectedItem = current;
+        return picker;
+    }
+
+    private void AddFolder(string folder, int depth, List<string> folders, List<Device> matches)
+    {
+        var inside = matches.Where(d => FolderPath.IsWithin(d.Group, folder)).ToList();
+        if (IsFiltering && inside.Count == 0) return;
+        bool collapsed = IsCollapsed(folder);
+        _list.Children.Add(SectionHeader(folder, Ui.GlyphFolder, FolderPath.Leaf(folder), inside.Count, depth, collapsed, menu => FillFolderMenu(menu, folder), dropFolder: folder));
+        if (collapsed) return;
+
+        var grid = new CardGridPanel { Margin = new Thickness(depth * Indent, 0, 0, 0) };
+        foreach (var device in inside.Where(d => d.Group == folder)) grid.Children.Add(BuildCard(device));
+        if (grid.Children.Count > 0) _list.Children.Add(grid);
+        var children = folders.Where(f => FolderPath.Parent(f) == folder).ToList();
+        foreach (var child in children) AddFolder(child, depth + 1, folders, matches);
+        if (!IsFiltering && inside.Count == 0 && children.Count == 0)
+        {
+            var empty = Ui.Secondary("空文件夹。把设备卡片拖到标题上，或在设备的“更多”菜单里移动到这里。", true);
+            empty.Margin = new Thickness(depth * Indent + 30, 0, 0, 4);
+            _list.Children.Add(empty);
+        }
+    }
+
+    /// <summary>A foldable heading: chevron, icon, name and count, with a menu on the right. A folder heading accepts dropped device cards.</summary>
+    private FrameworkElement SectionHeader(string key, string glyph, string title, int count, int depth, bool collapsed, Action<MenuFlyout>? menu, string? dropFolder = null, bool busy = false)
+    {
+        var row = Ui.Columns("*", "auto");
+        row.Margin = new Thickness(depth * Indent, depth == 0 ? 12 : 4, 0, 2);
+
+        var label = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
+        label.Children.Add(new FontIcon { Glyph = collapsed ? "" : "", FontSize = 10, Foreground = Ui.Brush("TextFillColorSecondaryBrush") });
+        label.Children.Add(Ui.Icon(glyph, 14));
+        label.Children.Add(Ui.Strong(title));
+        label.Children.Add(Ui.Secondary(count.ToString()));
+        if (busy) label.Children.Add(new ProgressRing { IsActive = true, Width = 14, Height = 14 });
+        var toggle = new Button
+        {
+            Content = label,
+            Padding = new Thickness(4, 4, 10, 4),
+            Background = new Microsoft.UI.Xaml.Media.SolidColorBrush(Microsoft.UI.Colors.Transparent),
+            BorderThickness = new Thickness(0),
+            HorizontalAlignment = HorizontalAlignment.Left,
+        };
+        ToolTipService.SetToolTip(toggle, (collapsed ? "展开 " : "折叠 ") + (dropFolder ?? title));
+        toggle.Click += (_, _) => ToggleCollapsed(key);
+        row.Children.Add(toggle.InColumn(0));
+        if (menu != null) row.Children.Add(Ui.MenuButton(Ui.GlyphMore, "文件夹操作", menu).InColumn(1));
+
+        if (dropFolder != null) AcceptDevices(row, dropFolder);
+        return row;
+    }
+
+    private void FillFolderMenu(MenuFlyout menu, string folder)
+    {
+        menu.Items.Add(Ui.MenuItem("在此添加设备", Ui.GlyphAdd, () => _ = AddDeviceAsync(folder)));
+        menu.Items.Add(Ui.MenuItem("新建子文件夹", Ui.GlyphFolder, () => _ = NewFolderAsync(folder)));
+        menu.Items.Add(Ui.MenuItem("重命名或移动", Ui.GlyphRename, () => _ = RenameFolderAsync(folder)));
+        menu.Items.Add(new MenuFlyoutSeparator());
+        menu.Items.Add(Ui.MenuItem("删除文件夹", Ui.GlyphDelete, () => _ = DeleteFolderAsync(folder)));
+    }
+
+    /// <summary>Asks for a folder name under <paramref name="parent"/>; returns its full path, or null when cancelled.</summary>
+    private async Task<string?> NewFolderAsync(string parent)
+    {
+        string title = parent.Length == 0 ? "新建文件夹" : $"在“{parent}”中新建文件夹";
+        string? name = await Dialogs.PromptTextAsync(title, "名称（用 / 可一次创建多层）", "", "创建", "例如：生产");
+        string path = FolderPath.Combine(parent, name ?? "");
+        if (name == null || path.Length == 0 || path == parent) return null;
+        if (!_app.Store.Data.DeviceFolders.Contains(path)) _app.Store.Data.DeviceFolders.Add(path);
+        _app.Store.Data.CollapsedFolders.RemoveAll(f => FolderPath.SelfAndAncestors(path).Contains(f));
+        _app.NotifyDevicesChanged();
+        return path;
+    }
+
+    private async Task RenameFolderAsync(string folder)
+    {
+        string? input = await Dialogs.PromptTextAsync("重命名文件夹", "新的路径（用 / 分隔，可移到别的文件夹下）", folder, "保存");
+        string target = FolderPath.Normalize(input);
+        if (input == null || target.Length == 0 || target == folder) return;
+        if (FolderPath.IsWithin(target, folder))
+        {
+            await Dialogs.AlertAsync("无法移动", "不能把文件夹移到它自己里面。");
+            return;
+        }
+        var data = _app.Store.Data;
+        foreach (var device in data.Devices) device.Group = FolderPath.Rename(device.Group, folder, target);
+        data.DeviceFolders = data.DeviceFolders.Select(f => FolderPath.Rename(f, folder, target)).Distinct().ToList();
+        data.CollapsedFolders = data.CollapsedFolders.Select(f => FolderPath.Rename(f, folder, target)).Distinct().ToList();
+        foreach (var widget in data.Settings.HomeWidgets ?? new()) widget.Group = FolderPath.Rename(widget.Group, folder, target);
+        _app.NotifyDevicesChanged();
+    }
+
+    /// <summary>Removes the folder and its subfolders; their devices move up to the folder above.</summary>
+    private async Task DeleteFolderAsync(string folder)
+    {
+        var data = _app.Store.Data;
+        string parent = FolderPath.Parent(folder);
+        var inside = data.Devices.Where(d => FolderPath.IsWithin(d.Group, folder)).ToList();
+        string destination = parent.Length == 0 ? "顶层" : $"“{parent}”";
+        string message = inside.Count == 0 ? "文件夹是空的。" : $"其中的 {inside.Count} 台设备会移到{destination}，设备本身不会删除。";
+        if (!await Dialogs.ConfirmAsync($"删除文件夹 {folder}？", message, "删除", destructive: true)) return;
+        foreach (var device in inside) device.Group = parent;
+        data.DeviceFolders.RemoveAll(f => FolderPath.IsWithin(f, folder));
+        data.CollapsedFolders.RemoveAll(f => FolderPath.IsWithin(f, folder));
+        _app.NotifyDevicesChanged();
+    }
+
+    private void MoveDevice(Device device, string folder)
+    {
+        if (device.Group == folder) return;
+        device.Group = folder;
+        _app.NotifyDevicesChanged();
+    }
+
+    private MenuFlyoutSubItem MoveMenu(Device device)
+    {
+        var sub = new MenuFlyoutSubItem { Text = "移到文件夹", Icon = Ui.Icon(Ui.GlyphFolder) };
+        if (device.Group.Length > 0) sub.Items.Add(Ui.MenuItem("不放在文件夹里", Ui.GlyphUp, () => MoveDevice(device, "")));
+        foreach (var folder in _app.Store.Data.AllDeviceFolders())
+        {
+            int depth = folder.Count(c => c == FolderPath.Separator);
+            var item = Ui.MenuItem(new string('　', depth) + FolderPath.Leaf(folder), folder == device.Group ? Ui.GlyphAccept : Ui.GlyphFolder, () => MoveDevice(device, folder));
+            item.IsEnabled = folder != device.Group;
+            ToolTipService.SetToolTip(item, folder);
+            sub.Items.Add(item);
+        }
+        sub.Items.Add(new MenuFlyoutSeparator());
+        sub.Items.Add(Ui.MenuItem("新建文件夹…", Ui.GlyphAdd, async () =>
+        {
+            if (await NewFolderAsync("") is { } created) MoveDevice(device, created);
+        }));
+        return sub;
+    }
+
+    /// <summary>Device cards can be dragged; a folder heading takes them in.</summary>
+    private static void MakeDraggable(UIElement card, Device device)
+    {
+        card.CanDrag = true;
+        card.DragStarting += (_, e) =>
+        {
+            e.Data.SetText(DragPrefix + device.Id);
+            e.Data.RequestedOperation = DataPackageOperation.Move;
+        };
+    }
+
+    private void AcceptDevices(FrameworkElement target, string folder)
+    {
+        target.AllowDrop = true;
+        target.DragOver += (_, e) =>
+        {
+            if (!e.DataView.Contains(StandardDataFormats.Text)) return;
+            e.AcceptedOperation = DataPackageOperation.Move;
+            e.DragUIOverride.Caption = "移到 " + folder;
+        };
+        target.Drop += async (_, e) =>
+        {
+            if (!e.DataView.Contains(StandardDataFormats.Text)) return;
+            var deferral = e.GetDeferral();
+            try
+            {
+                string text = await e.DataView.GetTextAsync();
+                if (text.StartsWith(DragPrefix, StringComparison.Ordinal) && Guid.TryParse(text[DragPrefix.Length..], out var id) && _app.Store.FindDevice(id) is { } device)
+                    MoveDevice(device, folder);
+            }
+            finally
+            {
+                deferral.Complete();
+            }
+        };
+    }
+
+    // ---- Discovered: WSL and Proxmox guests --------------------------------------------------
+
+    /// <summary>Adds what was found without being added by hand; returns whether anything matched.</summary>
+    private bool AddDiscovered(string query)
+    {
+        bool Hit(params string[] fields) => query.Length == 0 || fields.Any(f => f.Contains(query, StringComparison.OrdinalIgnoreCase));
+
+        var wsl = _app.LocalTargets(LocalKind.Wsl).Where(t => Hit(t.Name, t.Detail, "wsl")).ToList();
+        var hosts = _app.Store.Data.Devices
+            .Where(d => d.Facts?.HasProxmox == true)
+            .Select(d => (Host: d, Guests: _app.ProxmoxGuests(d).Where(g => Hit(g.Name, g.Id.ToString(), d.Name, g.Kind == PveGuestKind.Lxc ? "lxc" : "vm")).ToList()))
+            .Where(h => h.Guests.Count > 0 || query.Length == 0)
+            .ToList();
+        int total = wsl.Count + hosts.Sum(h => h.Guests.Count);
+        if (query.Length > 0 && total == 0) return false;
+
+        bool busy = _app.IsScanning || hosts.Any(h => _app.ProbingDevices.Contains(h.Host.Id));
+        bool collapsed = IsCollapsed(DiscoveredKey);
+        _list.Children.Add(SectionHeader(DiscoveredKey, Ui.GlyphSearch, "自动发现", total, 0, collapsed, menu =>
+        {
+            var refresh = Ui.MenuItem(busy ? "正在扫描…" : "重新发现", Ui.GlyphRefresh, () => _ = _app.RefreshDiscoveryAsync());
+            refresh.IsEnabled = !busy;
+            menu.Items.Add(refresh);
+        }, busy: busy));
+        if (collapsed) return total > 0;
+
+        if (wsl.Count > 0)
+        {
+            _list.Children.Add(SubHeading(Ui.GlyphLinux, "WSL", "本机的 Linux 发行版"));
+            var grid = new CardGridPanel();
+            foreach (var target in wsl) grid.Children.Add(BuildWslCard(target));
+            _list.Children.Add(grid);
+        }
+        foreach (var (host, guests) in hosts)
+        {
+            var facts = host.Facts!;
+            string node = _app.ProxmoxNode(host);
+            string scanned = _app.Probes.ContainsKey(host.Id) ? "刚扫描" : $"扫描于 {Ui.RelativeTime(facts.ScannedAt)}";
+            _list.Children.Add(SubHeading(Ui.GlyphVm, $"{host.Name} · Proxmox", (node.Length > 0 ? $"节点 {node} · " : "") + scanned));
+            if (guests.Count == 0)
+            {
+                var none = Ui.Secondary("这个节点上没有虚拟机或容器，或者还需要重新扫描。", true);
+                none.Margin = new Thickness(Indent, 0, 0, 4);
+                _list.Children.Add(none);
+                continue;
+            }
+            var grid = new CardGridPanel();
+            foreach (var guest in guests) grid.Children.Add(BuildGuestCard(host, guest));
+            _list.Children.Add(grid);
+        }
+        if (total == 0 && hosts.Count == 0)
+        {
+            string wslNote = _app.Scan?.Statuses.FirstOrDefault(s => s.Kind == LocalKind.Wsl) is { Installed: false } status ? $"WSL：{status.Message}。" : "";
+            var none = Ui.Secondary(wslNote + "扫描过的 Proxmox 主机上的虚拟机和 LXC 容器也会显示在这里。", true);
+            none.Margin = new Thickness(30, 0, 0, 4);
+            _list.Children.Add(none);
+        }
+        return total > 0;
+    }
+
+    private static FrameworkElement SubHeading(string glyph, string title, string detail)
+    {
+        var row = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8, Margin = new Thickness(Indent, 6, 0, 2) };
+        row.Children.Add(Ui.Icon(glyph, 12));
+        row.Children.Add(new TextBlock { Text = title, FontSize = 13, FontWeight = Microsoft.UI.Text.FontWeights.SemiBold });
+        row.Children.Add(Ui.Secondary(detail));
+        return row;
+    }
+
+    private static TextBlock StatusLine(string text, bool running)
+    {
+        var line = Ui.Secondary("");
+        line.Inlines.Add(new Microsoft.UI.Xaml.Documents.Run
+        {
+            Text = running ? "● " : "○ ",
+            Foreground = running ? Ui.Brush("SystemFillColorSuccessBrush") : Ui.Brush("TextFillColorTertiaryBrush"),
+        });
+        line.Inlines.Add(new Microsoft.UI.Xaml.Documents.Run { Text = text });
+        return line;
+    }
+
+    private FrameworkElement BuildWslCard(LocalTarget target)
+    {
+        var actions = new WrapPanel();
+        actions.Children.Add(Ui.Chip(Ui.GlyphTerminal, "终端", "打开 " + target.Name, () => _ = _sessions.OpenLocalAsync(target)));
+        var body = new List<FrameworkElement> { StatusLine("WSL" + (target.Detail.Length > 0 ? " · " + target.Detail : "") + (target.IsRunning ? " · 运行中" : " · 已停止"), target.IsRunning), actions };
+        var icon = MachineIcon(OsIdentity.LogoForName(target.Name) ?? "linux", Ui.GlyphLinux, $"WSL · {target.Name}", null, "");
+        return BuildTile(icon, target.Name, $"WSL 发行版 {target.Name}\n{target.Detail}", false, body, menu =>
+        {
+            bool isDefault = _app.DefaultShell.StableKey == target.StableKey;
+            var setDefault = Ui.MenuItem(isDefault ? "已是默认 Shell" : "设为默认 Shell", isDefault ? Ui.GlyphStarFilled : Ui.GlyphStar, () =>
+            {
+                _app.Store.Data.Settings.DefaultShellKey = target.StableKey;
+                _app.NotifySettingsChanged();
+                Refresh();
+            });
+            setDefault.IsEnabled = !isDefault;
+            menu.Items.Add(setDefault);
+            if (target.IsRunning) menu.Items.Add(Ui.MenuItem("停止", Ui.GlyphStop, () => _ = StopLocalAsync(target)));
+            menu.Items.Add(new MenuFlyoutSeparator());
+            var scan = Ui.MenuItem(_app.IsScanning ? "正在扫描…" : "重新扫描本机环境", Ui.GlyphRefresh, () => _ = _app.ScanLocalAsync());
+            scan.IsEnabled = !_app.IsScanning;
+            menu.Items.Add(scan);
+        });
+    }
+
+    private FrameworkElement BuildGuestCard(Device host, PveGuest guest)
+    {
+        bool isLxc = guest.Kind == PveGuestKind.Lxc;
+        var actions = new WrapPanel();
+        actions.Children.Add(isLxc
+            ? Ui.Chip(Ui.GlyphTerminal, "进入", $"在 {host.Name} 上进入容器 {guest.Id}", () => GuestActions.Enter(_sessions, host, guest))
+            : Ui.Chip(Ui.GlyphGlobe, "控制台", "打开 Proxmox 网页控制台", () => GuestActions.Enter(_sessions, host, guest)));
+        // A VM connected to once through its host is a saved device; its sessions open from here too.
+        if (GuestActions.SavedDevice(host, guest) is { } saved)
+            foreach (var connection in saved.Connections.Where(c => c.Protocol is ConnectionProtocol.Ssh or ConnectionProtocol.Rdp))
+                actions.Children.Add(Ui.Chip(Ui.GlyphFor(connection.Protocol), connection.Name, $"经 {host.Name} 连接 {saved.Host}", () => _ = _sessions.OpenConnectionAsync(saved, connection)));
+        else if (!isLxc)
+            actions.Children.Add(Ui.Chip(Ui.GlyphTerminal, "SSH", $"经 {host.Name} 跳转连接系统内部，并保存为设备", () => _ = GuestActions.OpenThroughHostAsync(_sessions, host, guest, ConnectionProtocol.Ssh)));
+
+        string kind = guest.Detail.Length > 0 ? guest.Detail : isLxc ? "LXC" : "VM";
+        var body = new List<FrameworkElement> { StatusLine($"{guest.Id} · {kind} · {GuestActions.DescribeStatus(guest)}", guest.IsRunning), actions };
+        var icon = new Grid { Width = 34, Height = 34 };
+        var mark = Ui.Icon(GuestActions.Glyph(guest), 22);
+        mark.HorizontalAlignment = HorizontalAlignment.Left;
+        mark.VerticalAlignment = VerticalAlignment.Top;
+        icon.Children.Add(mark);
+        bool probing = _app.ProbingDevices.Contains(host.Id);
+        return BuildTile(icon, guest.Name, $"{guest.Name}（{(isLxc ? "LXC 容器" : "虚拟机")} {guest.Id}）\n位于 {host.Name}", probing, body,
+            menu => GuestActions.AddMenuItems(menu.Items, _sessions, host, guest));
     }
 
     /// <summary>Scanning, monitoring and tunnels all need a shell over SSH, which RDP, Telnet and serial devices lack.</summary>
@@ -144,8 +568,10 @@ public sealed class DevicesPage : UserControl, IRefreshablePage
 
     // ---- Cards -------------------------------------------------------------------------------
 
-    /// <summary>A device card: system logo and name, a More menu for managing it, then rows of session buttons.</summary>
-    private static FrameworkElement BuildTile(FrameworkElement icon, string name, string tooltip, bool busy, IEnumerable<FrameworkElement> body, Action<MenuFlyout> more)
+    // ---- Cards -------------------------------------------------------------------------------
+
+    /// <summary>A device card: system logo and name, a More menu for managing it, then its tags and rows of session buttons.</summary>
+    private static Border BuildTile(FrameworkElement icon, string name, string tooltip, bool busy, IEnumerable<FrameworkElement> body, Action<MenuFlyout> more)
     {
         var panel = new StackPanel { Spacing = 10 };
 
@@ -200,14 +626,16 @@ public sealed class DevicesPage : UserControl, IRefreshablePage
         return host;
     }
 
+
     // ---- This computer -----------------------------------------------------------------------
 
+    /// <summary>Shells, Docker and Multipass. WSL distributions have cards of their own under 自动发现.</summary>
     private FrameworkElement BuildLocalCard()
     {
         var actions = new WrapPanel();
         var unavailable = new List<string>();
         var messages = new List<string>();
-        foreach (var kind in new[] { LocalKind.Shell, LocalKind.Wsl, LocalKind.Docker, LocalKind.Multipass })
+        foreach (var kind in new[] { LocalKind.Shell, LocalKind.Docker, LocalKind.Multipass })
         {
             var targets = _app.LocalTargets(kind).ToList();
             foreach (var target in targets) actions.Children.Add(BuildLocalChip(target));
@@ -283,6 +711,7 @@ public sealed class DevicesPage : UserControl, IRefreshablePage
         await _app.ScanLocalAsync();
     }
 
+
     // ---- Remote devices ----------------------------------------------------------------------
 
     private FrameworkElement BuildCard(Device device)
@@ -299,10 +728,18 @@ public sealed class DevicesPage : UserControl, IRefreshablePage
                 Ui.MenuItem("删除", Ui.GlyphDelete, () => _ = DeleteConnectionAsync(device, connection))));
         }
 
-        var body = new List<FrameworkElement> { actions };
+        var body = new List<FrameworkElement>();
+        if (device.Tags.Count > 0)
+        {
+            var tags = new WrapPanel();
+            foreach (var tag in device.Tags) tags.Children.Add(TagPill(tag));
+            body.Add(tags);
+        }
+        body.Add(actions);
         bool probing = _app.ProbingDevices.Contains(device.Id);
 
         var lines = new List<string> { device.Name, DescribeEndpoint(device), DescribeAuth(device) + " · " + DescribeRoute(device.Network) };
+        if (device.Group.Length > 0) lines.Add("文件夹：" + device.Group);
         if (device.AlternateAddresses.Count > 0) lines.Add("备用地址：" + string.Join("、", device.AlternateAddresses));
         if (device.Tags.Count > 0) lines.Add("标签：" + string.Join("、", device.Tags));
         var facts = device.Facts;
@@ -314,7 +751,7 @@ public sealed class DevicesPage : UserControl, IRefreshablePage
             facts?.CountryCode,
             facts != null ? Ui.DescribeLocation(facts) : "");
 
-        return BuildTile(icon, device.Name, string.Join("\n", lines), probing, body, menu =>
+        var card = BuildTile(icon, device.Name, string.Join("\n", lines), probing, body, menu =>
         {
             menu.Items.Add(Ui.MenuItem("添加连接", Ui.GlyphAdd, () => _ = AddConnectionAsync(device)));
             if (SupportsSsh(device))
@@ -324,10 +761,15 @@ public sealed class DevicesPage : UserControl, IRefreshablePage
                 menu.Items.Add(probe);
             }
             menu.Items.Add(Ui.MenuItem("编辑设备", Ui.GlyphEdit, () => _ = EditDeviceAsync(device)));
+            menu.Items.Add(MoveMenu(device));
+            menu.Items.Add(Ui.MenuItem("编辑标签", Ui.GlyphTag, () => _ = EditTagsAsync(device)));
             menu.Items.Add(new MenuFlyoutSeparator());
             menu.Items.Add(Ui.MenuItem("删除设备", Ui.GlyphDelete, () => _ = DeleteDeviceAsync(device)));
         });
+        MakeDraggable(card, device);
+        return card;
     }
+
 
     private static string DescribeEndpoint(Device device) =>
         (device.User.Length > 0 ? device.User + "@" : "") + device.Host + (device.Port != 22 ? ":" + device.Port : "");
@@ -348,9 +790,9 @@ public sealed class DevicesPage : UserControl, IRefreshablePage
         return parts.Count == 0 ? "直连" : string.Join(" → ", parts);
     }
 
-    public async Task AddDeviceAsync()
+    public async Task AddDeviceAsync(string? folder = null)
     {
-        if (await DeviceDialog.ShowAsync(null) is not { } device) return;
+        if (await DeviceDialog.ShowAsync(null, folder) is not { } device) return;
         _app.Store.Data.Devices.Add(device);
         _app.NotifyDevicesChanged();
         ScanAfterChange(device);
