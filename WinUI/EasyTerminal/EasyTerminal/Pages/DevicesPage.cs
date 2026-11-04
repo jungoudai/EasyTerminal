@@ -342,7 +342,8 @@ public sealed class DevicesPage : UserControl, IRefreshablePage
     private string DescribeRoute(NetworkProfile network)
     {
         var parts = new List<string>();
-        if (network.ProxyKind != ProxyKind.None) parts.Add($"{network.ProxyKind} 代理 {network.ProxyHost}:{network.ProxyPort}");
+        if (network.ProxyKind == ProxyKind.Tailscale) parts.Add("内置 Tailscale");
+        else if (network.ProxyKind != ProxyKind.None) parts.Add($"{network.ProxyKind} 代理 {network.ProxyHost}:{network.ProxyPort}");
         foreach (var id in network.JumpDeviceIds) parts.Add("跳板 " + (_app.Store.FindDevice(id)?.Name ?? "（已删除）"));
         return parts.Count == 0 ? "直连" : string.Join(" → ", parts);
     }

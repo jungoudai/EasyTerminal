@@ -98,6 +98,20 @@ internal static class SelfTest
             });
         }
 
+        await Step("settings tailscale section", async () =>
+        {
+            window.Navigate("settings");
+            await Task.Delay(800);
+            var page = FindAll<Pages.SettingsPage>(root).First();
+            var scroller = (ScrollViewer)page.Content;
+            var heading = FindAll<TextBlock>(page).First(t => t.Text.StartsWith("Tailscale", StringComparison.Ordinal));
+            double top = heading.TransformToVisual((UIElement)scroller.Content).TransformPoint(default).Y;
+            scroller.ChangeView(null, Math.Max(0, top - 12), null, true);
+            await Task.Delay(800);
+            Log($"tailscale helper available={Core.Tailscale.TailscaleNode.Shared.IsHelperAvailable}");
+            await CaptureAsync(root, "settings-tailscale");
+        });
+
         await Step("every bundled logo and flag loads", async () =>
         {
             var failed = new List<string>();

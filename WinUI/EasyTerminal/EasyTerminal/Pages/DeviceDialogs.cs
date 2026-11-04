@@ -17,6 +17,7 @@ public sealed class NetworkEditor : StackPanel
     private readonly TextBox _user = new() { Header = "用户名（可选）" };
     private readonly PasswordBox _password = new() { Header = "密码（可选）", PlaceholderText = "留空则保持不变" };
     private readonly StackPanel _proxyFields = new() { Spacing = 8 };
+    private readonly TextBlock _tailscaleHint = Ui.Secondary("经本应用内置的 Tailscale 节点连接，无需安装 Tailscale 客户端。地址可填 MagicDNS 名称或 100.x 地址。在 设置 → Tailscale 中登录。支持 SSH、SFTP、端口转发和远程桌面，不支持 Mosh。", true);
     private readonly StackPanel _jumpRows = new() { Spacing = 4 };
     private readonly ComboBox _jumpPicker = new() { PlaceholderText = "添加跳板设备", HorizontalAlignment = HorizontalAlignment.Stretch };
     private readonly List<Guid> _jumps;
@@ -31,7 +32,16 @@ public sealed class NetworkEditor : StackPanel
         _secretId = profile.ProxySecretId;
 
         foreach (var kind in Enum.GetValues<ProxyKind>())
-            _kind.Items.Add(new ComboBoxItem { Content = kind == ProxyKind.None ? "不使用代理" : kind.ToString().ToUpperInvariant(), Tag = kind });
+            _kind.Items.Add(new ComboBoxItem
+            {
+                Content = kind switch
+                {
+                    ProxyKind.None => "不使用代理",
+                    ProxyKind.Tailscale => "内置 Tailscale",
+                    _ => kind.ToString().ToUpperInvariant(),
+                },
+                Tag = kind,
+            });
         _kind.SelectedIndex = (int)profile.ProxyKind;
         _kind.SelectionChanged += (_, _) => UpdateProxyVisibility();
         _host.Text = profile.ProxyHost;
@@ -49,6 +59,7 @@ public sealed class NetworkEditor : StackPanel
 
         Children.Add(_kind);
         Children.Add(_proxyFields);
+        Children.Add(_tailscaleHint);
         Children.Add(Ui.Section("跳板（按连接顺序）"));
         Children.Add(_jumpRows);
         Children.Add(_jumpPicker);
@@ -58,8 +69,12 @@ public sealed class NetworkEditor : StackPanel
         RefreshJumps();
     }
 
-    private void UpdateProxyVisibility() =>
-        _proxyFields.Visibility = SelectedKind == ProxyKind.None ? Visibility.Collapsed : Visibility.Visible;
+    private void UpdateProxyVisibility()
+    {
+        // The built-in node needs no address: it is started and signed in from Settings → Tailscale.
+        _proxyFields.Visibility = SelectedKind is ProxyKind.None or ProxyKind.Tailscale ? Visibility.Collapsed : Visibility.Visible;
+        _tailscaleHint.Visibility = SelectedKind == ProxyKind.Tailscale ? Visibility.Visible : Visibility.Collapsed;
+    }
 
     private ProxyKind SelectedKind => (ProxyKind)((ComboBoxItem)_kind.SelectedItem).Tag;
 
@@ -103,7 +118,7 @@ public sealed class NetworkEditor : StackPanel
 
     public string? Validate()
     {
-        if (SelectedKind != ProxyKind.None && string.IsNullOrWhiteSpace(_host.Text)) return "请填写代理地址。";
+        if (SelectedKind is not (ProxyKind.None or ProxyKind.Tailscale) && string.IsNullOrWhiteSpace(_host.Text)) return "请填写代理地址。";
         if (double.IsNaN(_port.Value)) return "请填写代理端口。";
         return null;
     }

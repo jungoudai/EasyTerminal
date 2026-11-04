@@ -4,7 +4,8 @@ namespace EasyTerminal.Core.Models;
 
 public enum ConnectionProtocol { Ssh, Sftp, Mosh, Tmux, Herdr, Rdp, Telnet, Serial, Docker, Proxmox, Monitor, Tools, Network }
 public enum AuthMethod { Agent, KeyFile, Password }
-public enum ProxyKind { None, Socks5, Socks4, Http }
+/// <summary>Tailscale routes through the built-in node instead of a proxy server the user runs.</summary>
+public enum ProxyKind { None, Socks5, Socks4, Http, Tailscale }
 public enum LocalKind { Shell, Wsl, Docker, Multipass }
 public enum PortForwardKind { Local, Remote, Dynamic }
 
@@ -197,6 +198,22 @@ public sealed class AppSettings
     /// <summary>Lets a scan ask ipinfo.io or ipapi.co where the machine is.</summary>
     public bool RegionLookup { get; set; } = true;
     public bool LogSessions { get; set; }
+    public TailscaleSettings Tailscale { get; set; } = new();
+}
+
+/// <summary>The built-in Tailscale node, which devices use by picking Tailscale as their proxy.</summary>
+public sealed class TailscaleSettings
+{
+    /// <summary>Starts the node with the app; otherwise it starts the first time a connection needs it.</summary>
+    public bool StartWithApp { get; set; }
+    /// <summary>Name of this machine in the tailnet; empty uses easyterminal-&lt;computer name&gt;.</summary>
+    public string Hostname { get; set; } = "";
+    /// <summary>Coordination server; empty is Tailscale's own. Set it to use Headscale.</summary>
+    public string ControlUrl { get; set; } = "";
+    /// <summary>Stable id of a pre-authentication key in the vault; null signs in through the browser.</summary>
+    public string? AuthKeySecretId { get; set; }
+    /// <summary>Removes the node from the tailnet when the app closes.</summary>
+    public bool Ephemeral { get; set; }
 }
 
 public enum AgentProvider { OpenAICompatible, Anthropic }

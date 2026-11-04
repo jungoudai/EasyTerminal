@@ -63,6 +63,38 @@
   </ItemGroup>
 
   <!--
+    Built-in Tailscale: EasyTerminal.Tailscale is a small Go program on tsnet, built here for the target
+    platform and shipped beside the exe. Needs Go on PATH, or a portable copy in <repo>\.tools\go, or
+    -p:GoExe=path. Without Go the app still builds; the Tailscale settings then say the helper is missing.
+  -->
+  <PropertyGroup>
+    <TailscaleHelperDir>$(MSBuildThisFileDirectory)..\EasyTerminal.Tailscale\</TailscaleHelperDir>
+    <TailscaleGoArch Condition="'$(Platform)'=='x86'">386</TailscaleGoArch>
+    <TailscaleGoArch Condition="'$(Platform)'=='ARM64'">arm64</TailscaleGoArch>
+    <TailscaleGoArch Condition="'$(TailscaleGoArch)'==''">amd64</TailscaleGoArch>
+    <TailscaleHelperExe>$(TailscaleHelperDir)bin\$(TailscaleGoArch)\easyterminal-tailscale.exe</TailscaleHelperExe>
+    <GoExe Condition="'$(GoExe)'=='' and Exists('$(MSBuildThisFileDirectory)..\..\..\.tools\go\bin\go.exe')">$(MSBuildThisFileDirectory)..\..\..\.tools\go\bin\go.exe</GoExe>
+    <GoExe Condition="'$(GoExe)'==''">go</GoExe>
+  </PropertyGroup>
+
+  <Target Name="BuildTailscaleHelper" BeforeTargets="AssignTargetPaths"
+          Inputs="$(TailscaleHelperDir)main.go;$(TailscaleHelperDir)go.mod;$(TailscaleHelperDir)go.sum" Outputs="$(TailscaleHelperExe)">
+    <Exec Command="&quot;$(GoExe)&quot; version" ContinueOnError="true" IgnoreExitCode="true" StandardOutputImportance="low" StandardErrorImportance="low">
+      <Output TaskParameter="ExitCode" PropertyName="_GoExitCode" />
+    </Exec>
+    <Warning Condition="'$(_GoExitCode)'!='0'" Text="没有找到 Go，跳过内置 Tailscale 组件。安装 Go 或传入 -p:GoExe=... 以包含它。" />
+    <Exec Condition="'$(_GoExitCode)'=='0'" WorkingDirectory="$(TailscaleHelperDir)"
+          EnvironmentVariables="CGO_ENABLED=0;GOOS=windows;GOARCH=$(TailscaleGoArch)"
+          Command="&quot;$(GoExe)&quot; build -trimpath -buildvcs=false -ldflags=&quot;-s -w -H windowsgui&quot; -o &quot;$(TailscaleHelperExe)&quot; ." />
+  </Target>
+
+  <Target Name="IncludeTailscaleHelper" AfterTargets="BuildTailscaleHelper" BeforeTargets="AssignTargetPaths">
+    <ItemGroup Condition="Exists('$(TailscaleHelperExe)')">
+      <Content Include="$(TailscaleHelperExe)" Link="easyterminal-tailscale.exe" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+    </ItemGroup>
+  </Target>
+
+  <!--
     Defining the "Msix" ProjectCapability here allows the Single-project MSIX Packaging
     Tools extension to be activated for this project even if the Windows App SDK Nuget
     package has not yet been restored.

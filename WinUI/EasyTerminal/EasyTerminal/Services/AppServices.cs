@@ -4,6 +4,7 @@ using EasyTerminal.Core.Integrations;
 using EasyTerminal.Core.Models;
 using EasyTerminal.Core.Mosh;
 using EasyTerminal.Core.Ssh;
+using EasyTerminal.Core.Tailscale;
 using EasyTerminal.Core.Transport;
 using Microsoft.UI.Dispatching;
 
@@ -45,6 +46,35 @@ public sealed class AppServices
         Store.Load();
         HelperPath = Environment.ProcessPath ?? "EasyTerminal.exe";
         Ssh = new SshRunner(Store, request => PromptHandler?.Invoke(request) ?? Task.FromResult<string?>(null), HelperPath);
+        TailscaleNode.Shared.OptionsProvider = () =>
+        {
+            var ts = Store.Data.Settings.Tailscale;
+            string hostname = ts.Hostname.Length > 0 ? ts.Hostname : "easyterminal-" + Environment.MachineName.ToLowerInvariant();
+            return new TailscaleOptions(TailscaleHelperPath, TailscaleStateDirectory, hostname, ts.ControlUrl, Store.Secrets.Get(ts.AuthKeySecretId), ts.Ephemeral);
+        };
+    }
+
+    /// <summary>The tsnet helper ships beside the app; the build produces it from EasyTerminal.Tailscale.</summary>
+    public static string TailscaleHelperPath => Path.Combine(AppContext.BaseDirectory, TailscaleNode.HelperFileName);
+
+    /// <summary>Node key and tailnet state; deleting it forgets this machine's sign-in.</summary>
+    public static string TailscaleStateDirectory => Path.Combine(AppStore.DefaultDirectory, "tailscale");
+
+    /// <summary>Starts the built-in node at launch when the user asked for that. Failures show on the settings page.</summary>
+    public void StartTailscaleIfEnabled()
+    {
+        if (!Store.Data.Settings.Tailscale.StartWithApp || !TailscaleNode.Shared.IsHelperAvailable) return;
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                await TailscaleNode.Shared.StartAsync();
+            }
+            catch (Exception ex) when (ex is not OutOfMemoryException)
+            {
+                // LastError keeps the message for the settings page.
+            }
+        });
     }
 
     public void NotifyDevicesChanged()
@@ -211,11 +241,13 @@ public sealed class AppServices
     {
         foreach (var state in Forwards.Values) state.Tunnel?.Dispose();
         Forwards.Clear();
+        TailscaleNode.Shared.Dispose();
     }
 
     // ---- Remote desktop ----------------------------------------------------------------------
 
-    public sealed record RdpRoute(string Host, int Port, string Description, SshTunnel? Tunnel);
+    /// <summary><paramref name="Forwarder"/> carries the desktop through a proxy or the built-in Tailscale node; dispose it with the session.</summary>
+    public sealed record RdpRoute(string Host, int Port, string Description, SshTunnel? Tunnel, ProxyForwarder? Forwarder = null);
 
     /// <summary>Picks where the RDP client should dial; behind jump hosts that is a local end of an SSH tunnel.</summary>
     public async Task<RdpRoute> OpenRdpRouteAsync(Device device, Connection connection)
@@ -223,6 +255,8 @@ public sealed class AppServices
         var network = connection.OverrideNetwork ? connection.Network : device.Network;
         var endpoints = HostEndpoint.AllFor(device);
         int PortOf(HostEndpoint endpoint) => connection.Port ?? endpoint.Port ?? 3389;
+        if (ProxyRoute.UsesTailscale(network, Store.FindDevice))
+            await TailscaleNode.Shared.EnsureRunningAsync(null, CancellationToken.None);
 
         if (network.JumpDeviceIds.Count > 0)
         {
@@ -249,7 +283,13 @@ public sealed class AppServices
         }
 
         if (network.ProxyKind != ProxyKind.None)
-            throw new InvalidOperationException("RDP 不能直接走代理。请改用跳板设备，流量会通过 SSH 隧道转发。");
+        {
+            // The RDP control only dials plain TCP, so a loopback forwarder speaks to the proxy for it.
+            var target = endpoints[0];
+            var forwarder = new ProxyForwarder(ProxyRoute.Resolve(network, Store.Secrets.Get), target.Host, PortOf(target));
+            string via = network.ProxyKind == ProxyKind.Tailscale ? "经内置 Tailscale" : $"经 {network.ProxyKind} 代理";
+            return new RdpRoute("127.0.0.1", forwarder.LocalPort, $"{via}连接 {target.Host}:{PortOf(target)}", null, forwarder);
+        }
 
         foreach (var endpoint in endpoints)
         {
@@ -310,6 +350,9 @@ public sealed class AppServices
 
     private async Task<MoshEndpoint> BootstrapMoshAsync(Device device, Connection? connection, CancellationToken cancellation)
     {
+        var network = connection is { OverrideNetwork: true } ? connection.Network : device.Network;
+        if (network.ProxyKind == ProxyKind.Tailscale)
+            throw new InvalidOperationException("Mosh 使用 UDP，内置 Tailscale 只转发 TCP。请改用 SSH 会话。");
         using var context = await Ssh.PrepareAsync(device, connection, false, null, cancellation);
         using var process = Ssh.StartBackground(context, "-T", context.Alias, "sh -lc " + ShellQuote.Sh(MoshBootstrap.ServerCommand));
         process.StandardInput.Close();

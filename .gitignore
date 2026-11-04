@@ -11,3 +11,6 @@ WinUI/EasyTerminal/Installer/Output/
 .vs/
 *.user
 *.suo
+
+# Portable toolchains (Go for the built-in Tailscale helper)
+.tools/

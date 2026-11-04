@@ -101,6 +101,8 @@ public sealed class SshRunner
         var network = connection is { OverrideNetwork: true } ? connection.Network : device.Network;
         var chosen = new Dictionary<Guid, HostEndpoint>();
         var proxy = network.ProxyKind != ProxyKind.None ? network : null;
+        if (ProxyRoute.UsesTailscale(network, _store.FindDevice))
+            await Tailscale.TailscaleNode.Shared.EnsureRunningAsync(progress, cancellation);
         if (network.JumpDeviceIds.Count > 0)
         {
             if (device.AlternateAddresses.Count > 0) progress?.Invoke("经跳板连接时只使用第一个地址");

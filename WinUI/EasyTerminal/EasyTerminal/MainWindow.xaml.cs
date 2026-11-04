@@ -128,6 +128,7 @@ public sealed partial class MainWindow : Window
 #endif
         if (_app.Store.Data.Settings.RestoreSessions) _sessions.RestoreSavedTabs();
         _app.StartAutoForwards();
+        _app.StartTailscaleIfEnabled();
     }
 
     private void ApplyTheme()

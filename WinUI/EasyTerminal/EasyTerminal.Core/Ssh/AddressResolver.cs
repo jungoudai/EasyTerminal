@@ -116,11 +116,10 @@ public sealed class AddressResolver
         if (proxy is { ProxyKind: not ProxyKind.None })
             return await ProbeOnceAsync(cancellation, _connectTimeout * 2, async (client, token) =>
             {
-                await client.ConnectAsync(proxy.ProxyHost, proxy.ProxyPort, token);
+                var route = ProxyRoute.Resolve(proxy, _getSecret);
+                await client.ConnectAsync(route.Host, route.Port, token);
                 var stream = client.GetStream();
-                string kind = proxy.ProxyKind.ToString();
-                string? password = _getSecret(proxy.ProxySecretId);
-                await Task.Run(() => ProxyHandshake.Perform(stream, kind, host, port, proxy.ProxyUser, password), token);
+                await Task.Run(() => ProxyHandshake.Perform(stream, route.Kind, host, port, route.User, route.Password), token);
             });
 
         IPAddress[] addresses;

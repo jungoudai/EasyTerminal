@@ -6,7 +6,7 @@ using Microsoft.UI.Xaml.Controls;
 
 namespace EasyTerminal.Pages;
 
-public sealed class SettingsPage : UserControl, IRefreshablePage
+public sealed partial class SettingsPage : UserControl, IRefreshablePage
 {
     private readonly AppServices _app = AppServices.Current;
     private readonly ComboBox _shell = new() { MinWidth = 260 };
@@ -90,6 +90,7 @@ public sealed class SettingsPage : UserControl, IRefreshablePage
         content.Children.Add(Row("扫描设备时查询地区（向 ipinfo.io 或 ipapi.co 发送设备的公网地址）", Toggle(settings.RegionLookup, v => Update(s => s.RegionLookup = v))));
 
         AddAgentSettings(content);
+        AddTailscaleSettings(content);
 
         content.Children.Add(Ui.Section("配置"));
         var transfer = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };

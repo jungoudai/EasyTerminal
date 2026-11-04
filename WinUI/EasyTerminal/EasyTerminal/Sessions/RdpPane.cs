@@ -54,6 +54,7 @@ public sealed class RdpPane : Grid, IDisposable
     private nint _window;
     private ComDispatch? _control;
     private SshTunnel? _tunnel;
+    private ProxyForwarder? _forwarder;
     private int _attempt;
     private int _lastState = ConnectedDisconnected;
     private bool _active;
@@ -150,9 +151,11 @@ public sealed class RdpPane : Grid, IDisposable
             if (attempt != _attempt)
             {
                 route.Tunnel?.Dispose();
+                route.Forwarder?.Dispose();
                 return;
             }
             _tunnel = route.Tunnel;
+            _forwarder = route.Forwarder;
             if (_tunnel != null)
                 _tunnel.Exited += message => DispatcherQueue.TryEnqueue(() =>
                 {
@@ -391,6 +394,8 @@ public sealed class RdpPane : Grid, IDisposable
         DestroyControl();
         _tunnel?.Dispose();
         _tunnel = null;
+        _forwarder?.Dispose();
+        _forwarder = null;
     }
 
     private void DestroyControl()
@@ -421,6 +426,7 @@ public sealed class RdpPane : Grid, IDisposable
             if (process != null) await process.WaitForExitAsync();
             File.Delete(path);
             route.Tunnel?.Dispose();
+            route.Forwarder?.Dispose();
         }
         catch (Exception ex) when (ex is not OutOfMemoryException)
         {

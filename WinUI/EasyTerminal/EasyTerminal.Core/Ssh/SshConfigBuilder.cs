@@ -130,15 +130,15 @@ public sealed class SshConfigBuilder
 
     private string ProxyCommand(NetworkProfile network)
     {
-        string kind = network.ProxyKind.ToString().ToLowerInvariant();
+        // The built-in Tailscale node resolves to its loopback SOCKS5 port here.
+        var route = ProxyRoute.Resolve(network, _getSecret);
         var sb = new StringBuilder();
         sb.Append('"').Append(_helperPath.Replace('\\', '/')).Append("\" --proxy-connect ");
-        sb.Append(kind).Append(' ').Append(network.ProxyHost).Append(' ').Append(network.ProxyPort).Append(" %h %p");
-        if (!string.IsNullOrEmpty(network.ProxyUser))
+        sb.Append(route.Kind).Append(' ').Append(route.Host).Append(' ').Append(route.Port).Append(" %h %p");
+        if (!string.IsNullOrEmpty(route.User))
         {
-            sb.Append(' ').Append(network.ProxyUser);
-            string? password = _getSecret(network.ProxySecretId);
-            if (password != null) _environment[SshHelperEntry.ProxyPasswordVariable(network.ProxyHost, network.ProxyPort)] = password;
+            sb.Append(' ').Append(route.User);
+            if (route.Password != null) _environment[SshHelperEntry.ProxyPasswordVariable(route.Host, route.Port)] = route.Password;
         }
         return sb.ToString();
     }
