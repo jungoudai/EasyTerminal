@@ -352,6 +352,30 @@ internal static class SelfTest
             await pending;
         });
 
+        await Step("terminal over mica", async () =>
+        {
+            var settings = app.Store.Data.Settings;
+            string scheme = settings.ColorScheme;
+            int opacity = settings.TerminalOpacity;
+            Pages.SettingsPage.ChooseScheme(settings, Controls.ColorScheme.MicaFollow);
+            app.NotifySettingsChanged();
+            Log($"mica scheme opacity={settings.TerminalOpacity}");
+            await sessions.OpenLocalAsync(app.LocalTargets(LocalKind.Shell).First(t => t.Id == "cmd"));
+            var tab = sessions.Tabs[^1];
+            await Task.Delay(1800);
+            tab.Terminal!.Write("echo Mica terminal & dir /w C:\\Windows\\System32\\drivers\\etc\r");
+            await Task.Delay(1500);
+            await tab.View!.SaveFrameAsync(Path.Combine(OutputDirectory, "terminal-mica.png"));
+            // The swap chain is invisible to element captures, so an outside screen grab checks it during this pause.
+            Log("MICA-HOLD start");
+            await Task.Delay(6000);
+            Log("MICA-HOLD end");
+            sessions.Close(tab);
+            settings.ColorScheme = scheme;
+            settings.TerminalOpacity = opacity;
+            app.NotifySettingsChanged();
+        });
+
         await Step("local terminal rendering", async () =>
         {
             await sessions.OpenLocalAsync(app.LocalTargets(LocalKind.Shell).First(t => t.Id == "cmd"));
@@ -363,6 +387,9 @@ internal static class SelfTest
             Log($"terminal state={tab.Terminal.State} size={tab.Terminal.Buffer.Cols}x{tab.Terminal.Buffer.Rows}");
             Log("--- screen\n" + ScreenOf(tab.Terminal) + "\n---");
             await tab.View!.SaveFrameAsync(Path.Combine(OutputDirectory, "terminal.png"));
+            Log("OPAQUE-HOLD start");
+            await Task.Delay(5000);
+            Log("OPAQUE-HOLD end");
             await CaptureAsync(root, "sidebar-local-session");
             await CaptureMenuAsync(root, window.CreateNewSessionMenu(null), "new-menu-local");
             await sessions.OpenRemoteSessionAsync(sample, app.Probes[sample.Id].Sessions[0]);

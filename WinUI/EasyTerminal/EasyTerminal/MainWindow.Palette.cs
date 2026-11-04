@@ -240,11 +240,11 @@ public sealed partial class MainWindow
             yield return Command(Ui.GlyphEdit, $"编辑设备 {device.Name}", () => _ = EditDeviceAsync(device));
         }
 
-        foreach (var scheme in ColorScheme.All)
+        foreach (var name in ColorScheme.Names.ToList())
         {
-            yield return Command(Ui.GlyphEdit, "终端配色：" + scheme.Name, () =>
+            yield return Command(Ui.GlyphEdit, "终端配色：" + name, () =>
             {
-                _app.Store.Data.Settings.ColorScheme = scheme.Name;
+                Pages.SettingsPage.ChooseScheme(_app.Store.Data.Settings, name);
                 _app.NotifySettingsChanged();
             });
         }

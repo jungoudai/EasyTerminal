@@ -46,6 +46,7 @@ public sealed class AppServices
         Store.Load();
         HelperPath = Environment.ProcessPath ?? "EasyTerminal.exe";
         Ssh = new SshRunner(Store, request => PromptHandler?.Invoke(request) ?? Task.FromResult<string?>(null), HelperPath);
+        LoadCustomSchemes();
         TailscaleNode.Shared.OptionsProvider = () =>
         {
             var ts = Store.Data.Settings.Tailscale;
@@ -89,14 +90,22 @@ public sealed class AppServices
         SettingsChanged?.Invoke();
     }
 
+    /// <summary>Set by the window; schemes that follow the theme ask it. Defaults to dark before the window exists.</summary>
+    public Func<bool>? IsDarkTheme { get; set; }
+
     public TerminalAppearance Appearance
     {
         get
         {
             var s = Store.Data.Settings;
-            return new TerminalAppearance(s.FontFamily, (float)s.FontSize, (float)s.LineHeight, ColorScheme.Find(s.ColorScheme), s.CursorBlink, s.BoldIsBright);
+            var scheme = ColorScheme.Find(s.ColorScheme, IsDarkTheme?.Invoke() ?? true);
+            return new TerminalAppearance(s.FontFamily, (float)s.FontSize, (float)s.LineHeight, scheme, s.CursorBlink, s.BoldIsBright, Math.Clamp(s.TerminalOpacity, 0, 100) / 100f);
         }
     }
+
+    /// <summary>Publishes the saved custom schemes to the scheme list; call after changing them.</summary>
+    public void LoadCustomSchemes() =>
+        ColorScheme.Custom = Store.Data.Settings.CustomSchemes.Where(d => d.Name.Length > 0).Select(ColorScheme.FromData).ToList();
 
     public async Task ScanLocalAsync()
     {

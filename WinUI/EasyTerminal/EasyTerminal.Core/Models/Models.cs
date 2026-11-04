@@ -1,4 +1,5 @@
 using System.Text.Json.Serialization;
+using EasyTerminal.Core.Terminal;
 
 namespace EasyTerminal.Core.Models;
 
@@ -199,6 +200,12 @@ public sealed class AppSettings
     public bool RegionLookup { get; set; } = true;
     public bool LogSessions { get; set; }
     public TailscaleSettings Tailscale { get; set; } = new();
+    /// <summary>Color schemes the user imported or edited; they appear beside the built-in ones.</summary>
+    public List<TerminalSchemeData> CustomSchemes { get; set; } = new();
+    /// <summary>Terminal background opacity in percent. Below 100 the window's material (Mica or acrylic) shows through.</summary>
+    public int TerminalOpacity { get; set; } = 100;
+    /// <summary>Window material: Mica, MicaAlt or Acrylic.</summary>
+    public string WindowBackdrop { get; set; } = "Mica";
     /// <summary>What the home page shows, in order; null means the default layout.</summary>
     public List<HomeWidget>? HomeWidgets { get; set; }
 }

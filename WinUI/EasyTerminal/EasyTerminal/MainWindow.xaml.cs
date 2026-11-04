@@ -105,6 +105,13 @@ public sealed partial class MainWindow : Window
         // The title bar sizes its content to the content, and the suggestion list follows the box's width.
         RootGrid.SizeChanged += (_, e) => Palette.Width = Math.Clamp(e.NewSize.Width - 520, 200, 600);
         RootGrid.Loaded += OnLoaded;
+        // A closed InfoBar still keeps its margin, which left an empty strip above every terminal.
+        Notice.Visibility = Visibility.Collapsed;
+        Notice.RegisterPropertyChangedCallback(InfoBar.IsOpenProperty, (_, _) => Notice.Visibility = Notice.IsOpen ? Visibility.Visible : Visibility.Collapsed);
+        ClipSessionsToFrame();
+        // "Follow theme" terminal schemes change colors with the app's light or dark theme.
+        _app.IsDarkTheme = () => RootGrid.ActualTheme == ElementTheme.Dark;
+        RootGrid.ActualThemeChanged += (_, _) => _sessions.RefreshAppearance();
         ApplyTheme();
     }
 
@@ -131,6 +138,8 @@ public sealed partial class MainWindow : Window
         _app.StartTailscaleIfEnabled();
     }
 
+    private string _appliedBackdrop = "Mica";
+
     private void ApplyTheme()
     {
         RootGrid.RequestedTheme = _app.Store.Data.Settings.Theme switch
@@ -139,6 +148,37 @@ public sealed partial class MainWindow : Window
             "Dark" => ElementTheme.Dark,
             _ => ElementTheme.Default,
         };
+
+        // The window's material shows through every transparent surface, terminals included when their opacity is below 100%.
+        string backdrop = _app.Store.Data.Settings.WindowBackdrop;
+        if (backdrop == _appliedBackdrop) return;
+        _appliedBackdrop = backdrop;
+        SystemBackdrop = backdrop switch
+        {
+            "MicaAlt" => new MicaBackdrop { Kind = Microsoft.UI.Composition.SystemBackdrops.MicaKind.BaseAlt },
+            "Acrylic" => new DesktopAcrylicBackdrop(),
+            _ => new MicaBackdrop(),
+        };
+    }
+
+    /// <summary>
+    /// The content frame has a rounded top-left corner. Pages draw inside it, but a terminal's swap chain is a
+    /// square that would cover the curve and the frame's edge, so the session area is clipped to the same shape.
+    /// </summary>
+    private void ClipSessionsToFrame()
+    {
+        var visual = Microsoft.UI.Xaml.Hosting.ElementCompositionPreview.GetElementVisual(SessionHost);
+        var compositor = visual.Compositor;
+        var shape = compositor.CreateRoundedRectangleGeometry();
+        shape.CornerRadius = new System.Numerics.Vector2(6, 6);
+        visual.Clip = compositor.CreateGeometricClip(shape);
+        void Resize()
+        {
+            // Larger than the area on the right and bottom, so only the top-left corner is rounded.
+            shape.Size = new System.Numerics.Vector2((float)SessionHost.ActualWidth + 16, (float)SessionHost.ActualHeight + 16);
+        }
+        SessionHost.SizeChanged += (_, _) => Resize();
+        Resize();
     }
 
     private Task<string?> OnSshPrompt(AskPassRequest request)

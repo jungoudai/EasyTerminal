@@ -123,10 +123,14 @@ public sealed class SessionManager
     public SessionManager(AppServices app)
     {
         _app = app;
-        _app.SettingsChanged += () =>
-        {
-            foreach (var tab in _tabs) tab.View?.SetAppearance(_app.Appearance);
-        };
+        _app.SettingsChanged += RefreshAppearance;
+    }
+
+    /// <summary>Applies the current font, colors and background to every terminal.</summary>
+    public void RefreshAppearance()
+    {
+        var appearance = _app.Appearance;
+        foreach (var tab in _tabs) tab.View?.SetAppearance(appearance);
     }
 
     // ---- Opening -----------------------------------------------------------------------------

@@ -27,11 +27,7 @@ public sealed partial class SettingsPage : UserControl, IRefreshablePage
         theme.SelectionChanged += (_, _) => Update(s => s.Theme = (string)((ComboBoxItem)theme.SelectedItem).Tag);
         content.Children.Add(Row("应用主题", theme));
 
-        var scheme = new ComboBox { MinWidth = 260 };
-        foreach (var item in ColorScheme.All) scheme.Items.Add(item.Name);
-        scheme.SelectedItem = ColorScheme.Find(settings.ColorScheme).Name;
-        scheme.SelectionChanged += (_, _) => Update(s => s.ColorScheme = (string)scheme.SelectedItem);
-        content.Children.Add(Row("终端配色", scheme));
+        AddTerminalThemeSettings(content);
 
         var font = new ComboBox { MinWidth = 260, IsEditable = true, Text = settings.FontFamily };
         foreach (var name in new[] { "Cascadia Mono", "Cascadia Code", "Consolas", "JetBrains Mono", "Fira Code", "Sarasa Mono SC", "Courier New" }) font.Items.Add(name);

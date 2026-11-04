@@ -22,7 +22,8 @@ using DispatcherQueueTimer = Microsoft.UI.Dispatching.DispatcherQueueTimer;
 
 namespace EasyTerminal.Controls;
 
-public sealed record TerminalAppearance(string FontFamily, float FontSize, float LineHeight, ColorScheme Scheme, bool CursorBlink, bool BoldIsBright);
+/// <summary><paramref name="BackgroundOpacity"/> below 1 lets the window's Mica or acrylic show through the default background.</summary>
+public sealed record TerminalAppearance(string FontFamily, float FontSize, float LineHeight, ColorScheme Scheme, bool CursorBlink, bool BoldIsBright, float BackgroundOpacity = 1f);
 
 /// <summary>
 /// The terminal surface: a swap chain drawn on a dedicated thread at most once per vblank, a hidden
@@ -166,7 +167,7 @@ public sealed partial class TerminalView : Grid, IDisposable
             _input.FontSize = appearance.FontSize;
             _input.FontFamily = new FontFamily(appearance.FontFamily);
         }
-        Background = new SolidColorBrush(appearance.Scheme.Background);
+        Background = new SolidColorBrush(WithOpacity(appearance.Scheme.Background, appearance.BackgroundOpacity));
         _wake.Set();
         if (IsLoaded) _resizeTimer.Start();
     }
@@ -412,7 +413,8 @@ public sealed partial class TerminalView : Grid, IDisposable
         }
 
         var atlas = _atlas!;
-        Color defaultBackground = reverse ? scheme.Foreground : scheme.Background;
+        // Reverse video paints the whole screen in the foreground color, so it stays opaque.
+        Color defaultBackground = reverse ? scheme.Foreground : WithOpacity(scheme.Background, _appearance.BackgroundOpacity);
 
         // Queue every glyph first so all rasterization happens outside the swap chain's session.
         for (int i = 0; i < _frame.Length; i++)
@@ -629,6 +631,10 @@ public sealed partial class TerminalView : Grid, IDisposable
     }
 
     private static Color BlockCursorText(in Cell cell, ColorScheme scheme) => scheme.Background;
+
+    /// <summary>The swap chain is premultiplied, but Win2D takes straight colors and premultiplies them itself.</summary>
+    private static Color WithOpacity(Color color, float opacity) =>
+        opacity >= 1f ? color : Color.FromArgb((byte)Math.Round(Math.Clamp(opacity, 0f, 1f) * 255), color.R, color.G, color.B);
 
     private static bool InSelection(long row, int col, long startRow, int startCol, long endRow, int endCol)
     {
