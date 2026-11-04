@@ -179,7 +179,9 @@ public static class Ui
                 {
                     "*" => new GridLength(1, GridUnitType.Star),
                     "auto" => GridLength.Auto,
-                    _ => new GridLength(double.Parse(width)),
+                    // Weighted stars such as "2*" share the remaining width in proportion.
+                    _ when width.EndsWith('*') => new GridLength(double.Parse(width[..^1], System.Globalization.CultureInfo.InvariantCulture), GridUnitType.Star),
+                    _ => new GridLength(double.Parse(width, System.Globalization.CultureInfo.InvariantCulture)),
                 },
             });
         }

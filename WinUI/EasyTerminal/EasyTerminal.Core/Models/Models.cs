@@ -199,6 +199,38 @@ public sealed class AppSettings
     public bool RegionLookup { get; set; } = true;
     public bool LogSessions { get; set; }
     public TailscaleSettings Tailscale { get; set; } = new();
+    /// <summary>What the home page shows, in order; null means the default layout.</summary>
+    public List<HomeWidget>? HomeWidgets { get; set; }
+}
+
+public enum HomeWidgetKind { Overview, Sessions, Devices, Recent, Resources, LiveMonitor, Forwards, Environment, LocalShells, Tailscale }
+
+/// <summary>One panel on the home page. The page is twelve columns wide; narrow windows widen panels to fit.</summary>
+public sealed class HomeWidget
+{
+    public Guid Id { get; set; } = Guid.NewGuid();
+    public HomeWidgetKind Kind { get; set; }
+    /// <summary>Columns out of twelve: 3, 4, 6, 8 or 12.</summary>
+    public int Width { get; set; } = 6;
+    /// <summary>Replaces the default title when not empty.</summary>
+    public string Title { get; set; } = "";
+    /// <summary>Device folder to show for device and resource panels; empty shows every device.</summary>
+    public string Group { get; set; } = "";
+    /// <summary>The machine a live monitor samples.</summary>
+    public Guid? DeviceId { get; set; }
+    /// <summary>Longest list a panel shows.</summary>
+    public int MaxItems { get; set; } = 8;
+
+    public static List<HomeWidget> DefaultLayout() => new()
+    {
+        new HomeWidget { Kind = HomeWidgetKind.Overview, Width = 12 },
+        new HomeWidget { Kind = HomeWidgetKind.Sessions, Width = 8 },
+        new HomeWidget { Kind = HomeWidgetKind.Recent, Width = 4, MaxItems = 6 },
+        new HomeWidget { Kind = HomeWidgetKind.Devices, Width = 12 },
+        new HomeWidget { Kind = HomeWidgetKind.Resources, Width = 8 },
+        new HomeWidget { Kind = HomeWidgetKind.LocalShells, Width = 4 },
+        new HomeWidget { Kind = HomeWidgetKind.Environment, Width = 12 },
+    };
 }
 
 /// <summary>The built-in Tailscale node, which devices use by picking Tailscale as their proxy.</summary>

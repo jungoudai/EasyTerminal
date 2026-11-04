@@ -98,6 +98,46 @@ internal static class SelfTest
             });
         }
 
+        await Step("home with every widget", async () =>
+        {
+            window.Navigate("home");
+            await Task.Delay(500);
+            var home = FindAll<Pages.HomePage>(root).First();
+            home.ShowEveryWidgetForTest(false, sample.Id);
+            await Task.Delay(1500);
+            await CaptureAsync(root, "home-widgets");
+            var scroller = (ScrollViewer)home.Content;
+            scroller.ChangeView(null, scroller.ScrollableHeight, null, true);
+            await Task.Delay(800);
+            await CaptureAsync(root, "home-widgets-lower");
+            scroller.ChangeView(null, scroller.ScrollableHeight / 2, null, true);
+            await Task.Delay(800);
+            await CaptureAsync(root, "home-widgets-middle");
+
+            // Wide enough for panels to sit side by side on the twelve-column grid.
+            var size = window.AppWindow.Size;
+            window.AppWindow.Resize(new Windows.Graphics.SizeInt32(1900, 1150));
+            scroller.ChangeView(null, 0, null, true);
+            await Task.Delay(1500);
+            await CaptureAsync(root, "home-wide");
+            scroller.ChangeView(null, scroller.ScrollableHeight, null, true);
+            await Task.Delay(800);
+            await CaptureAsync(root, "home-wide-lower");
+            Log($"home wide width={home.ActualWidth:0}");
+            window.AppWindow.Resize(size);
+            await Task.Delay(500);
+
+            scroller.ChangeView(null, 0, null, true);
+            home.ShowEveryWidgetForTest(true, sample.Id);
+            await Task.Delay(800);
+            await CaptureAsync(root, "home-editing");
+            var frames = FindAll<Pages.Home.WidgetFrame>(home).ToList();
+            Log($"home widgets={frames.Count} width={home.ActualWidth:0}");
+            foreach (var frame in frames.Where(f => f.View.Error != null)) Log($"FAIL widget {frame.View.Model.Kind}: {frame.View.Error}");
+            home.ResetForTest();
+            await Task.Delay(300);
+        });
+
         await Step("settings tailscale section", async () =>
         {
             window.Navigate("settings");

@@ -173,7 +173,7 @@ public sealed class DevicesPage : UserControl, IRefreshablePage
     }
 
     /// <summary>The system's logo, with the flag of where the machine is in the bottom-right corner.</summary>
-    private static FrameworkElement MachineIcon(string? logo, string fallbackGlyph, string systemTooltip, string? countryCode, string locationTooltip)
+    internal static FrameworkElement MachineIcon(string? logo, string fallbackGlyph, string systemTooltip, string? countryCode, string locationTooltip)
     {
         var host = new Grid { Width = 34, Height = 34, Background = new Microsoft.UI.Xaml.Media.SolidColorBrush(Microsoft.UI.Colors.Transparent) };
         FrameworkElement mark = (logo != null ? Ui.Asset("Os", logo, 26, 26) : null) ?? (FrameworkElement)Ui.Icon(fallbackGlyph, 24);
