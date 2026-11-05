@@ -4,6 +4,7 @@
     xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
     xmlns:services="using:EasyTerminal.Services"
+    xmlns:controls="using:EasyTerminal.Controls"
     Title="EasyTerminal">
 
     <Window.SystemBackdrop>
@@ -132,5 +133,12 @@
                 <Grid x:Name="SideHost" Grid.RowSpan="2" Grid.Column="1" Visibility="Collapsed" />
             </Grid>
         </NavigationView>
+
+        <!-- Lies over the edge between the expanded pane and the content; MainWindow keeps it in place. -->
+        <controls:ResizeHandle
+            x:Name="SidebarHandle"
+            Grid.Row="1"
+            HorizontalAlignment="Left"
+            Visibility="Collapsed" />
     </Grid>
 </Window>

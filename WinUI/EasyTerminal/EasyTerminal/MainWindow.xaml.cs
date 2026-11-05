@@ -109,6 +109,7 @@ public sealed partial class MainWindow : Window
         Notice.Visibility = Visibility.Collapsed;
         Notice.RegisterPropertyChangedCallback(InfoBar.IsOpenProperty, (_, _) => Notice.Visibility = Notice.IsOpen ? Visibility.Visible : Visibility.Collapsed);
         ClipSessionsToFrame();
+        SetUpSidebarResize();
         // "Follow theme" terminal schemes change colors with the app's light or dark theme.
         _app.IsDarkTheme = () => RootGrid.ActualTheme == ElementTheme.Dark;
         RootGrid.ActualThemeChanged += (_, _) => _sessions.RefreshAppearance();
@@ -179,6 +180,51 @@ public sealed partial class MainWindow : Window
         }
         SessionHost.SizeChanged += (_, _) => Resize();
         Resize();
+    }
+
+    private const double SidebarMinWidth = 200, SidebarMaxWidth = 480;
+
+    /// <summary>
+    /// NavigationView has no resize grip of its own, so a handle lies over the edge of the expanded pane
+    /// and drives OpenPaneLength. Collapsed to icons, the pane has a fixed width and the handle is hidden.
+    /// </summary>
+    private void SetUpSidebarResize()
+    {
+        Nav.OpenPaneLength = Math.Clamp(_app.Store.Data.Settings.SidebarWidth, SidebarMinWidth, SidebarMaxWidth);
+
+        void Place()
+        {
+            bool expanded = Nav.IsPaneOpen && Nav.DisplayMode == NavigationViewDisplayMode.Expanded;
+            SidebarHandle.Visibility = expanded ? Visibility.Visible : Visibility.Collapsed;
+            // Centred on the edge, so the grip reaches a little into both sides.
+            SidebarHandle.Margin = new Thickness(Nav.OpenPaneLength - SidebarHandle.Width / 2, 0, 0, 0);
+        }
+
+        SidebarHandle.Dragged += delta =>
+        {
+            // Never so wide that the content has less room than the pane.
+            double max = Math.Min(SidebarMaxWidth, Math.Max(SidebarMinWidth, RootGrid.ActualWidth / 2));
+            Nav.OpenPaneLength = Math.Clamp(Nav.OpenPaneLength + delta, SidebarMinWidth, max);
+            Place();
+        };
+        SidebarHandle.DragEnded += () =>
+        {
+            _app.Store.Data.Settings.SidebarWidth = Nav.OpenPaneLength;
+            _app.Store.Save();
+        };
+        SidebarHandle.DoubleTapped += (_, _) =>
+        {
+            Nav.OpenPaneLength = 280;
+            Place();
+            _app.Store.Data.Settings.SidebarWidth = 280;
+            _app.Store.Save();
+        };
+        ToolTipService.SetToolTip(SidebarHandle, "拖动调整侧边栏宽度（双击恢复默认）");
+
+        Nav.PaneOpened += (_, _) => Place();
+        Nav.PaneClosed += (_, _) => Place();
+        Nav.DisplayModeChanged += (_, _) => Place();
+        Place();
     }
 
     private Task<string?> OnSshPrompt(AskPassRequest request)

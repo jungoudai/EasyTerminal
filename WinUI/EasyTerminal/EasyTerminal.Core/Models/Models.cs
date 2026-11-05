@@ -235,6 +235,8 @@ public sealed class AppSettings
     public bool AssistantPinned { get; set; } = true;
     public bool SnippetsPinned { get; set; }
     public double SnippetsWidth { get; set; } = 360;
+    /// <summary>Width of the left navigation pane when it is expanded; dragged with the handle on its edge.</summary>
+    public double SidebarWidth { get; set; } = 280;
     /// <summary>The AI panel shows the built-in agent; off shows the web page at <see cref="AssistantUrl"/>.</summary>
     public bool AssistantUsesAgent { get; set; } = true;
     public AgentSettings Agent { get; set; } = new();
