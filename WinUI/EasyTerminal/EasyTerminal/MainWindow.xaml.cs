@@ -75,6 +75,7 @@ public sealed partial class MainWindow : Window
         _app.DevicesChanged += RebuildSidebar;
         _app.SettingsChanged += ApplyTheme;
         _app.SettingsChanged += ApplyAssistantUrl;
+        _app.SettingsChanged += RefreshMiniWindowAppearance;
 
         Controls.TerminalView.AppShortcut = OnAppShortcut;
         foreach (var key in new[] { Windows.System.VirtualKey.I, Windows.System.VirtualKey.S })
@@ -356,6 +357,8 @@ public sealed partial class MainWindow : Window
             if (inSplit) CloseSplit();
             else ShowSplit(tab);
         }));
+        if (tab.Terminal != null)
+            menu.Items.Add(MenuItem(HasMiniWindow(tab) ? "关闭小窗" : "在小窗中显示", Ui.GlyphPip, () => ToggleMiniWindow(tab)));
         menu.Items.Add(new MenuFlyoutSeparator());
         menu.Items.Add(MenuItem("关闭", Ui.GlyphClose, () => _ = CloseTabAsync(tab)));
         menu.Items.Add(MenuItem("关闭其他会话", Ui.GlyphClose, () => _ = CloseOthersAsync(tab)));
@@ -371,7 +374,11 @@ public sealed partial class MainWindow : Window
         if (!_tabItems.TryGetValue(tab, out var entry)) return;
         entry.Title.Text = tab.Title;
         entry.Item.Opacity = tab.IsLive ? 1 : 0.6;
-        ToolTipService.SetToolTip(entry.Item, $"{tab.Title}\n{tab.StatusText}");
+        ToolTipService.SetToolTip(entry.Item, $"{tab.Title}\n{tab.StatusText}{(HasMiniWindow(tab) ? "\n正在小窗中显示" : "")}");
+        // The context menu was built for the old state; its mini-window entry has to say the opposite now.
+        if (entry.Item.ContextFlyout is MenuFlyout menu)
+            foreach (var item in menu.Items.OfType<MenuFlyoutItem>())
+                if (item.Text is "关闭小窗" or "在小窗中显示") item.Text = HasMiniWindow(tab) ? "关闭小窗" : "在小窗中显示";
     }
 
     /// <summary>What can be opened on this machine; a null device means this computer.</summary>
@@ -782,6 +789,7 @@ public sealed partial class MainWindow : Window
 
     private void OnSessionRemoved(SessionTab tab)
     {
+        CloseMiniWindow(tab);
         SessionHost.Children.Remove(tab.Content);
         if (tab == _splitLeft || tab == _splitRight)
         {
@@ -806,6 +814,7 @@ public sealed partial class MainWindow : Window
     private void OnSessionChanged(SessionTab tab)
     {
         ApplyTabState(tab);
+        UpdateMiniWindow(tab);
         _pageRefreshTimer.Stop();
         _pageRefreshTimer.Start();
     }

@@ -101,19 +101,39 @@ public sealed partial class TerminalView : Grid, IDisposable
         }
     }
 
-    public TerminalView()
+    /// <summary>
+    /// A mirror shows another view's session read-only: it never resizes the session or takes input,
+    /// and picks its own font size so the session's whole grid fits whatever size it is given.
+    /// </summary>
+    public bool IsMirror { get; }
+
+    /// <summary>The font size actually drawn; for a mirror, the one that makes the session fit.</summary>
+    public float FittedFontSize => _appearance.FontSize;
+
+    private float _requestedFontSize = 13;
+    private int _fitCols = -1, _fitRows = -1;
+
+    public TerminalView(bool mirror = false)
     {
+        IsMirror = mirror;
         _dispatcher = DispatcherQueue.GetForCurrentThread();
         _resizeTimer = _dispatcher.CreateTimer();
         _resizeTimer.Interval = TimeSpan.FromMilliseconds(40);
         _resizeTimer.IsRepeating = false;
         _resizeTimer.Tick += (_, _) => ApplyLayoutSize();
 
-        ConfigureInput();
-        _inputLayer.Children.Add(_input);
         Children.Add(_panel);
-        Children.Add(_inputLayer);
-        Children.Add(_scrollBar);
+        if (mirror)
+        {
+            IsHitTestVisible = false;
+        }
+        else
+        {
+            ConfigureInput();
+            _inputLayer.Children.Add(_input);
+            Children.Add(_inputLayer);
+            Children.Add(_scrollBar);
+        }
 
         _panel.PointerPressed += OnPointerPressed;
         _panel.PointerMoved += OnPointerMoved;
@@ -158,7 +178,9 @@ public sealed partial class TerminalView : Grid, IDisposable
     {
         lock (_renderLock)
         {
-            _appearance = appearance;
+            _requestedFontSize = appearance.FontSize;
+            // A mirror keeps its fitted size until the next fit, so it never flashes at full size.
+            _appearance = IsMirror && _fitCols > 0 ? appearance with { FontSize = _appearance.FontSize } : appearance;
             _metricsDirty = true;
             _dirty = true;
         }
@@ -257,21 +279,8 @@ public sealed partial class TerminalView : Grid, IDisposable
         {
             if (!_metricsDirty) return;
             EnsureDevice();
-            using var format = new CanvasTextFormat
-            {
-                FontFamily = _appearance.FontFamily,
-                FontSize = _appearance.FontSize,
-                WordWrapping = CanvasWordWrapping.NoWrap,
-            };
-            using var layout = new CanvasTextLayout(_device!, "M", format, 0, 0);
             float scale = _dpi / 96f;
-            var bounds = layout.LayoutBounds;
-            // Snap cells to whole pixels so sprites never need resampling and rows never show seams.
-            float widthPixels = MathF.Max(MathF.Round((float)bounds.Width * scale), 1);
-            float naturalHeight = (float)bounds.Height;
-            float heightPixels = MathF.Max(MathF.Ceiling(naturalHeight * _appearance.LineHeight * scale), 1);
-            _cellWidth = widthPixels / scale;
-            _cellHeight = heightPixels / scale;
+            (_cellWidth, _cellHeight, float naturalHeight) = CellSize(_appearance.FontSize);
             _baselineOffset = MathF.Round((_cellHeight - naturalHeight) / 2 * scale) / scale;
 
             _atlas?.Dispose();
@@ -280,9 +289,73 @@ public sealed partial class TerminalView : Grid, IDisposable
         }
     }
 
+    /// <summary>The cell for a font size, in DIPs; call with the render lock held.</summary>
+    private (float Width, float Height, float NaturalHeight) CellSize(float fontSize)
+    {
+        EnsureDevice();
+        using var format = new CanvasTextFormat
+        {
+            FontFamily = _appearance.FontFamily,
+            FontSize = fontSize,
+            WordWrapping = CanvasWordWrapping.NoWrap,
+        };
+        using var layout = new CanvasTextLayout(_device!, "M", format, 0, 0);
+        float scale = _dpi / 96f;
+        var bounds = layout.LayoutBounds;
+        // Snap cells to whole pixels so sprites never need resampling and rows never show seams.
+        float widthPixels = MathF.Max(MathF.Round((float)bounds.Width * scale), 1);
+        float naturalHeight = (float)bounds.Height;
+        float heightPixels = MathF.Max(MathF.Ceiling(naturalHeight * _appearance.LineHeight * scale), 1);
+        return (widthPixels / scale, heightPixels / scale, naturalHeight);
+    }
+
+    /// <summary>Picks the largest font at which the session's whole grid fits this mirror.</summary>
+    private void FitToSession()
+    {
+        var session = _session;
+        if (session == null || ActualWidth < 1 || ActualHeight < 1) return;
+        int cols, rows;
+        lock (session.Buffer.SyncRoot)
+        {
+            cols = Math.Max(session.Buffer.Cols, 1);
+            rows = Math.Max(session.Buffer.Rows, 1);
+        }
+        float width = Math.Max((float)ActualWidth - Padding * 2, 1);
+        float height = Math.Max((float)ActualHeight - Padding * 2, 1);
+        lock (_renderLock)
+        {
+            _fitCols = cols;
+            _fitRows = rows;
+            var (cw, ch, _) = CellSize(_requestedFontSize);
+            float size = Math.Clamp(_requestedFontSize * MathF.Min(width / (cols * cw), height / (rows * ch)), 2f, _requestedFontSize * 2);
+            // Cells snap to whole pixels, so the proportional guess can overshoot by a pixel per cell.
+            for (int i = 0; i < 8; i++)
+            {
+                (cw, ch, _) = CellSize(size);
+                if ((cols * cw <= width && rows * ch <= height) || size <= 2f) break;
+                size = MathF.Max(size * 0.95f, 2f);
+            }
+            if (_appearance.FontSize != size)
+            {
+                _appearance = _appearance with { FontSize = size };
+                _metricsDirty = true;
+            }
+            _viewWidth = (float)ActualWidth;
+            _viewHeight = (float)ActualHeight;
+            _sizeDirty = true;
+            _dirty = true;
+        }
+        _wake.Set();
+    }
+
     private void ApplyLayoutSize()
     {
         if (ActualWidth < 1 || ActualHeight < 1) return;
+        if (IsMirror)
+        {
+            FitToSession();
+            return;
+        }
         lock (_renderLock)
         {
             EnsureMetrics();
@@ -305,7 +378,8 @@ public sealed partial class TerminalView : Grid, IDisposable
             // Wake on output, or for the next cursor blink.
             _wake.WaitOne(BlinkMilliseconds);
             if (_stopRender) break;
-            if (!_visible || !s_windowVisible) continue;
+            // A mirror lives in its own window, which stays up while the main one is minimized.
+            if (!_visible || (!s_windowVisible && !IsMirror)) continue;
 
             // Idle, unfocused terminals draw nothing at all.
             bool blinkTick = _appearance.CursorBlink && _focused;
@@ -378,6 +452,13 @@ public sealed partial class TerminalView : Grid, IDisposable
             if (buffer.SynchronizedOutput && !_sizeDirty && _lastDrawnVersion >= 0) return;
             cols = buffer.Cols;
             rows = buffer.Rows;
+            if (IsMirror && (cols != _fitCols || rows != _fitRows))
+            {
+                // The session was resized by its main view; refit once the new grid is known.
+                _fitCols = cols;
+                _fitRows = rows;
+                _dispatcher.TryEnqueue(FitToSession);
+            }
             if (_frame.Length != cols * rows) _frame = new Cell[cols * rows];
             for (int r = 0; r < rows; r++)
             {
@@ -648,6 +729,7 @@ public sealed partial class TerminalView : Grid, IDisposable
 
     private void PostCursorAndScroll(int cursorRow, int cursorCol, int scrollback, int offset, int rows)
     {
+        if (IsMirror) return;
         if (scrollback == _postedScrollback && offset == _postedOffset && rows == _postedRows && cursorRow == _postedCursorRow && cursorCol == _postedCursorCol) return;
         _postedScrollback = scrollback;
         _postedOffset = offset;

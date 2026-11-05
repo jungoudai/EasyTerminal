@@ -419,6 +419,29 @@ internal static class SelfTest
             sessions.Close(tab);
         });
 
+        await Step("mini window mirrors a running terminal", async () =>
+        {
+            await sessions.OpenLocalAsync(app.LocalTargets(LocalKind.Shell).First(t => t.Id == "cmd"));
+            var tab = sessions.Tabs[^1];
+            await Task.Delay(1800);
+            tab.Terminal!.Write("echo MINI-WINDOW-OK\r");
+            await Task.Delay(800);
+            var before = (tab.Terminal.Buffer.Cols, tab.Terminal.Buffer.Rows);
+            var mini = window.ShowMiniWindowForTest(tab);
+            await Task.Delay(1500);
+            var after = (tab.Terminal.Buffer.Cols, tab.Terminal.Buffer.Rows);
+            Log($"mini grid before={before} after={after} fittedFont={mini.ViewForTest.FittedFontSize:0.0}");
+            if (before != after) throw new InvalidOperationException("The mini window resized the session");
+            await mini.ViewForTest.SaveFrameAsync(Path.Combine(OutputDirectory, "mini-window.png"));
+            // Output that arrives while the mini window is up has to show in it too.
+            tab.Terminal.Write("echo SECOND-LINE\r");
+            await Task.Delay(800);
+            await mini.ViewForTest.SaveFrameAsync(Path.Combine(OutputDirectory, "mini-window-2.png"));
+            sessions.Close(tab);
+            await Task.Delay(300);
+            if (window.MiniWindowCountForTest != 0) throw new InvalidOperationException("Closing the tab left its mini window open");
+        });
+
         await Step("packaged ssh: config accepted, connection refused is reported", async () =>
         {
             await sessions.OpenConnectionAsync(sample, ssh);

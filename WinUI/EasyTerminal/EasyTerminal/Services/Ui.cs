@@ -53,6 +53,10 @@ public static class Ui
     public const string GlyphRename = "";
     public const string GlyphLog = "";
     public const string GlyphTag = "";
+    /// <summary>Open in new window: a session shown in its own small window.</summary>
+    public const string GlyphPip = "";
+    /// <summary>Back to window: returning from the small window.</summary>
+    public const string GlyphBackToWindow = "";
 
     public static string GlyphFor(ConnectionProtocol protocol) => protocol switch
     {
