@@ -151,18 +151,19 @@ internal static class SelfTest
             await Task.Delay(300);
         });
 
-        await Step("settings tailscale section", async () =>
+        await Step("settings categories", async () =>
         {
             window.Navigate("settings");
             await Task.Delay(800);
             var page = FindAll<Pages.SettingsPage>(root).First();
-            var scroller = (ScrollViewer)page.Content;
-            var heading = FindAll<TextBlock>(page).First(t => t.Text.StartsWith("Tailscale", StringComparison.Ordinal));
-            double top = heading.TransformToVisual((UIElement)scroller.Content).TransformPoint(default).Y;
-            scroller.ChangeView(null, Math.Max(0, top - 12), null, true);
-            await Task.Delay(800);
+            for (int i = 0; i < page.CategoryCountForTest; i++)
+            {
+                page.ShowCategoryForTest(i);
+                await Task.Delay(600);
+                await CaptureAsync(root, $"settings-{i}");
+            }
+            page.ShowCategoryForTest(0);
             Log($"tailscale helper available={Core.Tailscale.TailscaleNode.Shared.IsHelperAvailable}");
-            await CaptureAsync(root, "settings-tailscale");
         });
 
         await Step("every bundled logo and flag loads", async () =>

@@ -14,12 +14,9 @@ public sealed partial class SettingsPage : UserControl, IRefreshablePage
 
     public SettingsPage()
     {
-        var (root, content) = Ui.Page();
-        Content = root;
         var settings = _app.Store.Data.Settings;
-        content.Children.Add(Ui.Title("设置"));
 
-        content.Children.Add(Ui.Section("外观"));
+        var content = Category("外观", Ui.GlyphStar);
         var theme = new ComboBox { MinWidth = 260 };
         foreach (var (name, tag) in new[] { ("跟随系统", "Default"), ("浅色", "Light"), ("深色", "Dark") })
             theme.Items.Add(new ComboBoxItem { Content = name, Tag = tag });
@@ -27,6 +24,7 @@ public sealed partial class SettingsPage : UserControl, IRefreshablePage
         theme.SelectionChanged += (_, _) => Update(s => s.Theme = (string)((ComboBoxItem)theme.SelectedItem).Tag);
         content.Children.Add(Row("应用主题", theme));
 
+        content.Children.Add(Ui.Section("终端"));
         AddTerminalThemeSettings(content);
 
         var font = new ComboBox { MinWidth = 260, IsEditable = true, Text = settings.FontFamily };
@@ -56,7 +54,7 @@ public sealed partial class SettingsPage : UserControl, IRefreshablePage
         content.Children.Add(Row("光标闪烁", Toggle(settings.CursorBlink, v => Update(s => s.CursorBlink = v))));
         content.Children.Add(Row("粗体使用亮色", Toggle(settings.BoldIsBright, v => Update(s => s.BoldIsBright = v))));
 
-        content.Children.Add(Ui.Section("会话"));
+        content = Category("会话", Ui.GlyphTerminal);
         _shell.SelectionChanged += (_, _) =>
         {
             if (_shell.SelectedItem is ComboBoxItem { Tag: string key }) Update(s => s.DefaultShellKey = key);
@@ -74,7 +72,7 @@ public sealed partial class SettingsPage : UserControl, IRefreshablePage
 
         content.Children.Add(Row($"记录会话日志到 {AppServices.SessionLogDirectory}（新会话生效，可能包含敏感输出）", Toggle(settings.LogSessions, v => Update(s => s.LogSessions = v))));
 
-        content.Children.Add(Ui.Section("工具"));
+        content = Category("工具", Ui.GlyphResources);
         var assistantUrl = new TextBox { MinWidth = 260, Text = settings.AssistantUrl };
         assistantUrl.LostFocus += (_, _) =>
         {
@@ -85,18 +83,75 @@ public sealed partial class SettingsPage : UserControl, IRefreshablePage
         content.Children.Add(Row("AI 助手网址（网页模式）", assistantUrl));
         content.Children.Add(Row("扫描设备时查询地区（向 ipinfo.io 或 ipapi.co 发送设备的公网地址）", Toggle(settings.RegionLookup, v => Update(s => s.RegionLookup = v))));
 
-        AddAgentSettings(content);
-        AddTailscaleSettings(content);
+        AddAgentSettings(Category("AI Agent", Ui.GlyphAssistant));
+        AddTailscaleSettings(Category("Tailscale", Ui.GlyphNetwork));
 
-        content.Children.Add(Ui.Section("配置"));
+        content = Category("导入 / 导出", Ui.GlyphTransfer);
         var transfer = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
         transfer.Children.Add(Ui.Button("导出", Ui.GlyphUpload, () => _ = ExportAsync()));
         transfer.Children.Add(Ui.Button("导入", Ui.GlyphDownload, () => _ = ImportAsync()));
         content.Children.Add(Row("设备、片段和端口转发（不含密码和令牌）", transfer));
 
+        Content = BuildLayout();
         _app.ScanChanged += Refresh;
         Refresh();
         _loading = false;
+    }
+
+    // The category shown last, so coming back to settings opens where the user left off.
+    private static int _lastCategory;
+    private readonly List<(string Name, string Glyph, StackPanel Panel)> _categories = new();
+    private readonly ScrollViewer _detail = new() { HorizontalScrollMode = ScrollMode.Disabled };
+
+    /// <summary>A settings category: its own page of rows, listed in the navigation on the left.</summary>
+    private StackPanel Category(string name, string glyph)
+    {
+        var panel = new StackPanel { Spacing = 8, Padding = new Thickness(24, 24, 32, 32), MaxWidth = 900, HorizontalAlignment = HorizontalAlignment.Stretch };
+        panel.Children.Add(Ui.Title(name));
+        _categories.Add((name, glyph, panel));
+        return panel;
+    }
+
+    private readonly ListView _nav = new() { SelectionMode = ListViewSelectionMode.Single };
+
+#if DEBUG
+    internal int CategoryCountForTest => _categories.Count;
+    internal void ShowCategoryForTest(int index) => _nav.SelectedIndex = index;
+#endif
+
+    private FrameworkElement BuildLayout()
+    {
+        var nav = _nav;
+        foreach (var (name, glyph, _) in _categories)
+        {
+            var item = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 12, Padding = new Thickness(0, 8, 0, 8) };
+            item.Children.Add(Ui.Icon(glyph));
+            item.Children.Add(new TextBlock { Text = name, VerticalAlignment = VerticalAlignment.Center });
+            nav.Items.Add(new ListViewItem { Content = item });
+        }
+        nav.SelectionChanged += (_, _) =>
+        {
+            if (nav.SelectedIndex < 0) return;
+            _lastCategory = nav.SelectedIndex;
+            _detail.Content = _categories[nav.SelectedIndex].Panel;
+            _detail.ChangeView(null, 0, null, true);
+        };
+        nav.SelectedIndex = Math.Clamp(_lastCategory, 0, _categories.Count - 1);
+
+        var left = new Grid { Padding = new Thickness(12, 24, 12, 12), RowSpacing = 12 };
+        left.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        left.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
+        left.Children.Add(new TextBlock { Text = "设置", Style = (Style)Application.Current.Resources["SubtitleTextBlockStyle"], Margin = new Thickness(16, 0, 0, 0) });
+        Grid.SetRow(nav, 1);
+        left.Children.Add(nav);
+
+        var divider = new Border { Width = 1, Background = Ui.Brush("DividerStrokeColorDefaultBrush") };
+        var root = Ui.Columns("220", "auto", "*");
+        root.ColumnSpacing = 0;
+        root.Children.Add(left.InColumn(0));
+        root.Children.Add(divider.InColumn(1));
+        root.Children.Add(_detail.InColumn(2));
+        return root;
     }
 
     private static readonly (string Name, AgentProvider Provider, string Endpoint, string Model)[] AgentPresets =
@@ -112,7 +167,6 @@ public sealed partial class SettingsPage : UserControl, IRefreshablePage
     private void AddAgentSettings(StackPanel content)
     {
         var agent = _app.Store.Data.Settings.Agent;
-        content.Children.Add(Ui.Section("AI Agent"));
 
         var provider = new ComboBox { MinWidth = 260 };
         provider.Items.Add(new ComboBoxItem { Content = "OpenAI 兼容接口", Tag = AgentProvider.OpenAICompatible });
@@ -268,10 +322,28 @@ public sealed partial class SettingsPage : UserControl, IRefreshablePage
     private static FrameworkElement Row(string label, FrameworkElement control)
     {
         var row = Ui.Columns("*", "auto");
+        row.ColumnSpacing = 16;
+        row.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        row.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
         var text = Ui.Body(label);
+        text.TextWrapping = TextWrapping.Wrap;
         text.VerticalAlignment = VerticalAlignment.Center;
         row.Children.Add(text.InColumn(0));
         row.Children.Add(control.InColumn(1));
+
+        // When the pane is too narrow for the label beside the control, the control moves under the label.
+        bool? stacked = null;
+        row.SizeChanged += (_, args) =>
+        {
+            bool narrow = args.NewSize.Width < 520;
+            if (narrow == stacked) return;
+            stacked = narrow;
+            Grid.SetColumn(control, narrow ? 0 : 1);
+            Grid.SetRow(control, narrow ? 1 : 0);
+            Grid.SetColumnSpan(text, narrow ? 2 : 1);
+            control.HorizontalAlignment = HorizontalAlignment.Left;
+            control.Margin = new Thickness(0, narrow ? 8 : 0, 0, 0);
+        };
         return Ui.Card(row, 12);
     }
 }

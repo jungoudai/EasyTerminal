@@ -25,7 +25,6 @@ public sealed partial class SettingsPage
     private void AddTailscaleSettings(StackPanel content)
     {
         var ts = _app.Store.Data.Settings.Tailscale;
-        content.Children.Add(Ui.Section("Tailscale（内置）"));
 
         if (!_node.IsHelperAvailable)
         {
