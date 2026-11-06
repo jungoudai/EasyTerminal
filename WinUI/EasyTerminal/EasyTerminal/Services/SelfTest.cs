@@ -437,6 +437,17 @@ internal static class SelfTest
             tab.Terminal.Write("echo SECOND-LINE\r");
             await Task.Delay(800);
             await mini.ViewForTest.SaveFrameAsync(Path.Combine(OutputDirectory, "mini-window-2.png"));
+
+            bool startedOnTop = mini.IsTopmost;
+            mini.SetTopmost(false, save: false);
+            bool unpinned = !mini.IsTopmost;
+            mini.SetTopmost(true, save: false);
+            mini.SetOpacity(60);
+            Log($"mini topmost start={startedOnTop} unpinned={unpinned} opacity={mini.OpacityPercent} alpha={mini.LayeredAlphaForTest}");
+            if (!startedOnTop || !unpinned || mini.LayeredAlphaForTest != 153) throw new InvalidOperationException("Pin or opacity did not apply");
+            Log("MINI-HOLD start");
+            await Task.Delay(6000);
+            Log("MINI-HOLD end");
             sessions.Close(tab);
             await Task.Delay(300);
             if (window.MiniWindowCountForTest != 0) throw new InvalidOperationException("Closing the tab left its mini window open");

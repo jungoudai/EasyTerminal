@@ -237,6 +237,10 @@ public sealed class AppSettings
     public double SnippetsWidth { get; set; } = 360;
     /// <summary>Width of the left navigation pane when it is expanded; dragged with the handle on its edge.</summary>
     public double SidebarWidth { get; set; } = 280;
+    /// <summary>Mini windows stay above other windows; switched from the pin button in their title bar.</summary>
+    public bool MiniWindowTopmost { get; set; } = true;
+    /// <summary>Whole-window opacity of mini windows, 30–100 percent.</summary>
+    public int MiniWindowOpacity { get; set; } = 100;
     /// <summary>The AI panel shows the built-in agent; off shows the web page at <see cref="AssistantUrl"/>.</summary>
     public bool AssistantUsesAgent { get; set; } = true;
     public AgentSettings Agent { get; set; } = new();

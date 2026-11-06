@@ -10,7 +10,7 @@ using WinRT.Interop;
 namespace EasyTerminal.Sessions;
 
 /// <summary>
-/// A small always-on-top window that keeps a running terminal in view while the user works elsewhere.
+/// A small window, on top of others unless unpinned and optionally see-through, that keeps a running terminal in view while the user works elsewhere.
 /// It only watches: the session still lives in its tab, which is where it is typed into and resized.
 /// </summary>
 public sealed class MiniWindow : Window
@@ -19,11 +19,26 @@ public sealed class MiniWindow : Window
     private readonly TextBlock _title = Ui.Body("");
     private readonly Grid _root = new();
     private readonly Border _hint;
+    private readonly Button _pin;
+    private bool _topmost;
+
+    /// <summary>Below this the window is too faint to read or find again.</summary>
+    private const int MinOpacity = 30;
+    private const string GlyphPinned = "";
+    private const string GlyphUnpinned = "";
+    private const string GlyphOpacity = "";
 
     public SessionTab Tab { get; }
 
 #if DEBUG
     internal TerminalView ViewForTest => _view;
+
+    /// <summary>The alpha Windows actually holds for the window, or -1 when it is not layered.</summary>
+    internal int LayeredAlphaForTest =>
+        GetLayeredWindowAttributes(WindowNative.GetWindowHandle(this), out _, out byte alpha, out uint flags) && (flags & LWA_ALPHA) != 0 ? alpha : -1;
+
+    [DllImport("user32.dll")]
+    private static extern bool GetLayeredWindowAttributes(nint hwnd, out uint key, out byte alpha, out uint flags);
 #endif
 
     /// <summary>The user wants the session back in the main window.</summary>
@@ -57,11 +72,17 @@ public sealed class MiniWindow : Window
         Grid.SetColumn(drag, 1);
         titleRow.Children.Add(drag);
 
-        var back = Ui.IconButton(Ui.GlyphBackToWindow, "回到主窗口（双击画面也可以）", () => ReturnRequested?.Invoke());
-        back.Padding = new Thickness(8, 4, 8, 4);
-        back.VerticalAlignment = VerticalAlignment.Center;
-        Grid.SetColumn(back, 2);
-        titleRow.Children.Add(back);
+        var settings = AppServices.Current.Store.Data.Settings;
+        _pin = TitleButton("", "", () => SetTopmost(!_topmost, save: true));
+        var opacity = TitleButton(GlyphOpacity, "透明度", () => { });
+        opacity.Flyout = BuildOpacityFlyout(settings.MiniWindowOpacity);
+        var back = TitleButton(Ui.GlyphBackToWindow, "回到主窗口（双击画面也可以）", () => ReturnRequested?.Invoke());
+        var buttons = new StackPanel { Orientation = Orientation.Horizontal, VerticalAlignment = VerticalAlignment.Center };
+        buttons.Children.Add(_pin);
+        buttons.Children.Add(opacity);
+        buttons.Children.Add(back);
+        Grid.SetColumn(buttons, 2);
+        titleRow.Children.Add(buttons);
         _root.Children.Add(titleRow);
 
         _view.SetAppearance(appearance with { BackgroundOpacity = 1f });
@@ -97,15 +118,81 @@ public sealed class MiniWindow : Window
 
         if (AppWindow.Presenter is OverlappedPresenter presenter)
         {
-            presenter.IsAlwaysOnTop = true;
             presenter.IsMinimizable = false;
             presenter.IsMaximizable = false;
         }
         string iconPath = Path.Combine(AppContext.BaseDirectory, "Assets", "EasyTerminal.ico");
         if (File.Exists(iconPath)) AppWindow.SetIcon(iconPath);
         PlaceInCorner();
+        SetTopmost(settings.MiniWindowTopmost, save: false);
+        SetOpacity(settings.MiniWindowOpacity);
 
         Closed += (_, _) => _view.Dispose();
+    }
+
+    public bool IsTopmost => _topmost;
+
+    /// <summary>Whole-window opacity in percent, as last applied.</summary>
+    public int OpacityPercent { get; private set; } = 100;
+
+    private static Button TitleButton(string glyph, string tooltip, Action onClick)
+    {
+        var button = Ui.IconButton(glyph, tooltip, onClick);
+        button.Padding = new Thickness(8, 4, 8, 4);
+        return button;
+    }
+
+    /// <summary>Keeps the window above others, or lets it fall behind like any other window.</summary>
+    public void SetTopmost(bool topmost, bool save)
+    {
+        _topmost = topmost;
+        if (AppWindow.Presenter is OverlappedPresenter presenter) presenter.IsAlwaysOnTop = topmost;
+        // Filled pin while it stays on top; the outline means it can go behind other windows.
+        ((FontIcon)_pin.Content).Glyph = topmost ? GlyphPinned : GlyphUnpinned;
+        ToolTipService.SetToolTip(_pin, topmost ? "已置顶（点击取消）" : "置于顶层");
+        if (!save) return;
+        AppServices.Current.Store.Data.Settings.MiniWindowTopmost = topmost;
+        AppServices.Current.Store.Save();
+    }
+
+    private Flyout BuildOpacityFlyout(int initial)
+    {
+        var value = Ui.Secondary("");
+        var slider = new Slider { Minimum = MinOpacity, Maximum = 100, StepFrequency = 5, Value = Math.Clamp(initial, MinOpacity, 100), Width = 200 };
+        void Show() => value.Text = $"{(int)slider.Value}%";
+        slider.ValueChanged += (_, e) =>
+        {
+            SetOpacity((int)e.NewValue);
+            Show();
+        };
+        Show();
+        var header = Ui.Columns("*", "auto");
+        var label = Ui.Body("窗口透明度");
+        header.Children.Add(label);
+        Grid.SetColumn(value, 1);
+        header.Children.Add(value);
+        var panel = new StackPanel { Spacing = 4 };
+        panel.Children.Add(header);
+        panel.Children.Add(slider);
+        var flyout = new Flyout { Content = panel };
+        // Saved once the flyout closes, not on every step of a drag.
+        flyout.Closed += (_, _) =>
+        {
+            AppServices.Current.Store.Data.Settings.MiniWindowOpacity = OpacityPercent;
+            AppServices.Current.Store.Save();
+        };
+        return flyout;
+    }
+
+    /// <summary>Fades the whole window, title bar included, so what is behind it shows through.</summary>
+    public void SetOpacity(int percent)
+    {
+        percent = Math.Clamp(percent, MinOpacity, 100);
+        OpacityPercent = percent;
+        nint hwnd = WindowNative.GetWindowHandle(this);
+        nint style = GetWindowLongPtr(hwnd, GWL_EXSTYLE);
+        if ((style & WS_EX_LAYERED) == 0) SetWindowLongPtr(hwnd, GWL_EXSTYLE, style | WS_EX_LAYERED);
+        SetLayeredWindowAttributes(hwnd, 0, (byte)Math.Round(percent * 255 / 100.0), LWA_ALPHA);
     }
 
     public void SetAppearance(TerminalAppearance appearance)
@@ -141,4 +228,17 @@ public sealed class MiniWindow : Window
 
     [DllImport("user32.dll")]
     private static extern uint GetDpiForWindow(nint hwnd);
+
+    private const int GWL_EXSTYLE = -20;
+    private const nint WS_EX_LAYERED = 0x80000;
+    private const uint LWA_ALPHA = 0x2;
+
+    [DllImport("user32.dll")]
+    private static extern nint GetWindowLongPtr(nint hwnd, int index);
+
+    [DllImport("user32.dll")]
+    private static extern nint SetWindowLongPtr(nint hwnd, int index, nint value);
+
+    [DllImport("user32.dll")]
+    private static extern bool SetLayeredWindowAttributes(nint hwnd, uint key, byte alpha, uint flags);
 }
